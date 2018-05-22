@@ -303,3 +303,18 @@ class WordCounter(object):
 						word_indices.append(index)
 					documents_indices.append(word_indices)
 		return documents_indices
+
+	def get_pretrain_embedding(self, model, num_words = None, size = 200):
+	    words_matrix = np.random.randn(num_words, size)
+	    counts = [["unk", -1]]
+	    if num_words is None:
+	        num_words = len(self.words_list) + 1
+	    counts.extend(self.most_common(num_words - 1))
+	    dictionary = {}
+	    documents_indices = []
+	    for word, _ in counts:
+	        dictionary[word] = len(dictionary)
+	    for word, index in dictionary.items():
+	        if word in model.wv:
+	            words_matrix[index][:] = model.wv[word]
+	    return words_matrix
