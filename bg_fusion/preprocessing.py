@@ -1,7 +1,10 @@
 from __future__ import division
 from __future__ import absolute_import
 from __future__ import print_function
+import pandas as pd
 import numpy as np
+import nltk
+import pickle
 from abc import ABCMeta, abstractmethod
 from collections import defaultdict
 from functools import reduce
@@ -216,3 +219,87 @@ class OutMemorySamplePool(SamplePool):
 	
 	def __next__(self):
 		return self.__get_chunk__()
+
+class WordCounter(object):
+	def __init__(self):
+		self.tok = nltk.tokenize.toktok.ToktokTokenizer()
+		self.words_list = []
+		self.target_col = None
+		
+	def __check_filepath_list(self, filepath_list):
+		if filepath_list is None or not isinstance(filepath_list, list) or len(filepath_list) == 0:
+			raise Exception("filepath list is empty or not a list")
+
+	def __clean_text(self, content):
+		content = content.replace('\n',' ').replace('<br />', ' ')
+		return content
+	
+	def fit(self, filepath_list, target_col = None, clean_text_func = None):
+		self.__check_filepath_list(filepath_list)
+		self.target_col = target_col
+		counter = defaultdict(lambda: 0)
+		if clean_text_func is None:
+			clean_text_func = self.__clean_text
+		for filepath in filepath_list:
+			if self.target_col is not None:
+				data_df_iter = pd.read_csv(filepath, iterator=True, usecols=[self.target_col], chunksize=100000, encoding="utf-8")
+				for chunk in data_df_iter:
+					for content in chunk[target_col]:
+						content = clean_text_func(content)
+						words = [w.lower() for w in self.tok.tokenize(content)]
+						for word in words:
+							counter[word] += 1
+			else:
+				data_iter = open(filepath, 'r', encoding="utf-8")
+				for content in data_iter:
+					content = clean_text_func(content)
+					words = [w.lower() for w in self.tok.tokenize(content)]
+					for word in words:
+						counter[word] += 1
+		self.words_list = list(counter.items())
+		self.words_list.sort(key=lambda x: -x[1])
+	
+	def most_common(self, vocab_size):
+		return self.words_list[:vocab_size]
+	
+	def transform(self, filepath_list, max_words = None, clean_text_func = None):
+		self.__check_filepath_list(filepath_list)
+		if clean_text_func is None:
+			clean_text_func = self.__clean_text
+		counts = [["unk", -1]]
+		if max_words is None:
+			max_words = len(self.words_list) + 1
+		counts.extend(self.most_common(max_words - 1))
+		dictionary = {}
+		documents_indices = []
+		for word, _ in counts:
+			dictionary[word] = len(dictionary)
+		for filepath in filepath_list:
+			if self.target_col is not None:
+				data_df_iter = pd.read_csv(filepath, iterator=True, usecols=[self.target_col], chunksize=100000, encoding="utf-8")
+				for chunk in data_df_iter:
+					for content in chunk[self.target_col]:
+						content = clean_text_func(content)
+						words = [w.lower() for w in self.tok.tokenize(content)]
+						word_indices = []
+						for word in words:
+							if word in dictionary:
+								index = dictionary[word]
+							else:
+								index = 0
+							word_indices.append(index)
+						documents_indices.append(word_indices)
+			else:
+				data_iter = open(filepath, 'r', encoding="utf-8")
+				for content in data_iter:
+					content = clean_text_func(content)
+					words = [w.lower() for w in self.tok.tokenize(content)]
+					word_indices = []
+					for word in words:
+						if word in dictionary:
+							index = dictionary[word]
+						else:
+							index = 0
+						word_indices.append(index)
+					documents_indices.append(word_indices)
+		return documents_indices
