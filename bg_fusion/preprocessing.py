@@ -6,8 +6,9 @@ import numpy as np
 import nltk
 import pickle
 from abc import ABCMeta, abstractmethod
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 from functools import reduce
+from scipy.sparse import csc_matrix, csr_matrix, coo_matrix
 
 def auto_padding(X_list, sentence_size = 100, unkown_word_indicator = 0):
 	t = [len(x) for X in X_list for x in X]
@@ -99,7 +100,10 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 		if not isinstance(samples, np.ndarray):
 			samples = np.array(samples)
 		self._samples = samples
-		lens = np.array([len(x) for x in samples])
+		try:
+			lens = np.array([len(x) for x in samples])
+		except:
+			lens = np.array([x.shape[0] for x in samples])
 		self.sorted_indices = np.argsort(-lens)
 		lens = lens[self.sorted_indices]
 		n_samples = self._samples.shape[0]
@@ -148,12 +152,18 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 		batch_samples = super(AutoPaddingInMemorySamplePool, self).__next__(cut=cut)
 		self.iter_index_map[start_index_i] = self.iter_index
 		batch_len = self.bins_lens[start_index_i]
-		return_batch_samples = np.zeros((len(batch_samples), batch_len), dtype=np.int32)
+		if isinstance(batch_samples[0], (coo_matrix, csr_matrix, csc_matrix)):
+			return_batch_samples = np.zeros((len(batch_samples), batch_len, batch_samples[0].shape[1]), dtype=np.int32)
+		else:
+			return_batch_samples = np.zeros((len(batch_samples), batch_len), dtype=np.int32)
 		for i, sample in enumerate(batch_samples):
-			if len(sample) < batch_len:
-				padding_size = batch_len - len(sample)
-				sample = np.pad(sample, [(0, padding_size)], "constant", constant_values=[self.unkown_word_indicator] * 2)
-			return_batch_samples[i] = sample
+			if not isinstance(sample, (coo_matrix, csr_matrix, csc_matrix)):
+				if len(sample) < batch_len:
+					padding_size = batch_len - len(sample)
+					sample = np.pad(sample, [(0, padding_size)], "constant", constant_values=[self.unkown_word_indicator] * 2)
+				return_batch_samples[i] = sample
+			elif isinstance(sample, (coo_matrix, csr_matrix, csc_matrix)):
+				return_batch_samples[i, sample.row, sample.col] = sample.data # 1
 		self.chunk_indices_list += start_index
 		return return_batch_samples
 		
@@ -221,10 +231,11 @@ class OutMemorySamplePool(SamplePool):
 		return self.__get_chunk__()
 
 class WordCounter(object):
-	def __init__(self):
+	def __init__(self, seed = 0):
 		self.tok = nltk.tokenize.toktok.ToktokTokenizer()
 		self.words_list = []
 		self.target_col = None
+		self.random =  np.random.RandomState(seed)
 		
 	def __check_filepath_list(self, filepath_list):
 		if filepath_list is None or not isinstance(filepath_list, list) or len(filepath_list) == 0:
@@ -258,11 +269,30 @@ class WordCounter(object):
 						counter[word] += 1
 		self.words_list = list(counter.items())
 		self.words_list.sort(key=lambda x: -x[1])
+
+	# higher the frequency, easier to erase out
+	def getWordsStatistics(self, sentences, sample = 1e-4):
+		WordStat = namedtuple("WordStat", ["count", "sample_int"])
+		wordsStat = defaultdict(lambda: {"count": 0, "sample_int": sample})
+		retain_total = 0
+		for sent in sentences:
+			for word in sent:
+				wordsStat[word]["count"] += 1
+				retain_total += 1
+		threshold_count = sample * retain_total
+		for w in wordsStat:
+			v = wordsStat[w]["count"]
+			word_probability = (np.sqrt(v / threshold_count) + 1) * (threshold_count / v) # p ~= sqrt(threshold_count / count), count up, p down
+			if word_probability > 1.0:
+				word_probability = 1.0
+			wordsStat[w]["sample_int"] = int(round(word_probability * 2**32))
+			wordsStat[w] = WordStat(count=wordsStat[w]["count"], sample_int=wordsStat[w]["sample_int"])
+		return wordsStat
 	
 	def most_common(self, vocab_size):
 		return self.words_list[:vocab_size]
 	
-	def transform(self, filepath_list, max_words = None, clean_text_func = None):
+	def transform(self, filepath_list, max_words = None, clean_text_func = None, start_ch = None):
 		self.__check_filepath_list(filepath_list)
 		if clean_text_func is None:
 			clean_text_func = self.__clean_text
@@ -281,7 +311,8 @@ class WordCounter(object):
 					for content in chunk[self.target_col]:
 						content = clean_text_func(content)
 						words = [w.lower() for w in self.tok.tokenize(content)]
-						word_indices = []
+						if start_ch is not None:
+							word_indices.append(start_ch)
 						for word in words:
 							if word in dictionary:
 								index = dictionary[word]
@@ -295,6 +326,8 @@ class WordCounter(object):
 					content = clean_text_func(content)
 					words = [w.lower() for w in self.tok.tokenize(content)]
 					word_indices = []
+					if start_ch is not None:
+						word_indices.append(start_ch)
 					for word in words:
 						if word in dictionary:
 							index = dictionary[word]
@@ -303,6 +336,77 @@ class WordCounter(object):
 						word_indices.append(index)
 					documents_indices.append(word_indices)
 		return documents_indices
+
+	# indices to words
+	def reverse(self, indices,  num_words = None, ignore_freq_than = 1000000000, wordsStat = None):
+		assert isinstance(indices, np.ndarray)
+		counts = [["unk", -1]]
+		if num_words is None:
+			num_words = len(self.words_list) + 1
+		counts.extend(self.most_common(num_words - 1))
+		dictionary = {}
+		freq_dist = {}
+		for word, freq in counts:
+			freq_dist[len(dictionary)] = freq
+			dictionary[len(dictionary)] = word
+		docs = []
+		for i, doc_indices in enumerate(indices):
+			doc_words = []
+			# erase high frequency words
+			if wordsStat is not None:
+				doc_indices = [w for w in doc_indices if w in wordsStat and wordsStat[w].sample_int > self.random.rand() * 2 ** 32]
+			for word_index in doc_indices:
+				if word_index in dictionary and freq_dist[word_index] <= ignore_freq_than:
+					doc_words.append(dictionary[word_index])
+				else:
+					doc_words.append(dictionary[0])
+			docs.append(" ".join(doc_words))
+		return docs
+
+	def get_i2w_dictionary(self, num_words = None):
+		counts = [["unk", -1]]
+		if num_words is None:
+			num_words = len(self.words_list) + 1
+		counts.extend(self.most_common(num_words - 1))
+		dictionary = {}
+		for word, freq in counts:
+			dictionary[len(dictionary)] = word
+		return dictionary
+
+	def get_w2i_dictionary(self, num_words = None):
+		counts = [["unk", -1]]
+		if num_words is None:
+			num_words = len(self.words_list) + 1
+		counts.extend(self.most_common(num_words - 1))
+		dictionary = {}
+		for word, freq in counts:
+			dictionary[word] = len(dictionary)
+		return dictionary
+
+	@classmethod
+	def one_hot(cls, n_vocab, documents_indices):
+		n_docs, n_words = documents_indices.shape
+		doc_onehot = []
+		for i, doc in enumerate(documents_indices):
+			rows_cols_data = [(j, doc[j], 1) for j in range(len(doc))]
+			coomat = coo_matrix((rows_cols_data[:, 2], (rows_cols_data[:, 0], rows_cols_data[:, 1])), shape=(n_words, n_vocab))
+			doc_onehot.append(coomat)
+		return doc_onehot
+
+	@classmethod
+	def ngram_one_hot(cls, n_vocab, documents_indices, n_gram_value = 2, cumulate_add = False):
+		n_docs, n_words = documents_indices.shape
+		doc_onehot = []
+		for i, doc in enumerate(documents_indices):
+			doc_n_grams = zip(*[doc[i:] for i in range(n_gram_value)])
+			doc_n_grams = reduce(lambda x, y: x + y, doc_n_grams)
+			rows_cols_data = [(j // n_gram_value, doc_n_grams[j], 1) for j in range(len(doc_n_grams))]
+			if not cumulate_add:
+				rows_cols_data = set(rows_cols_data)
+			rows_cols_data = np.array(list(rows_cols_data))
+			coomat = coo_matrix((rows_cols_data[:, 2], (rows_cols_data[:, 0], rows_cols_data[:, 1])), shape=(n_words - n_gram_value + 1, n_vocab))
+			doc_onehot.append(coomat)
+		return doc_onehot
 
 	def get_pretrain_embedding(self, model, num_words = None, size = 200):
 	    words_matrix = np.random.randn(num_words, size)
