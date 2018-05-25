@@ -24,6 +24,9 @@ def auto_padding(X_list, sentence_size = 100, unkown_word_indicator = 0):
 			return_X_list[-1][i][:] = x[:sentence_size]
 	return return_X_list, (min_len, max_len)
 
+def make_n_gram(words, n_gram_value):
+	return zip(*[words[i:] for i in range(n_gram_value)])
+
 class SamplePool(metaclass=ABCMeta):
 	__metaclass__ = ABCMeta
 	
@@ -131,6 +134,10 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 			self.build(np.concatenate([self._samples, samplepool_to_extend._samples]))
 		else:
 			self.build(np.concatenate([self._samples, samplepool_to_extend.samples]))
+
+	@property
+	def sorted_samples(self):
+		return self._samples[self.sorted_indices]
 
 	def __next__(self):
 		if self.mode == "random":
@@ -337,6 +344,33 @@ class WordCounter(object):
 					documents_indices.append(word_indices)
 		return documents_indices
 
+	def transform_docs(self, docs, max_words = None, clean_text_func = None, start_ch = None):
+		if clean_text_func is None:
+			clean_text_func = self.__clean_text
+		counts = [["unk", -1]]
+		if max_words is None:
+			max_words = len(self.words_list) + 1
+		counts.extend(self.most_common(max_words - 1))
+		dictionary = {}
+		documents_indices = []
+		for word, _ in counts:
+			dictionary[word] = len(dictionary)
+		for content in docs:
+			content = clean_text_func(content)
+			words = [w.lower() for w in self.tok.tokenize(content)]
+			word_indices = []
+			if start_ch is not None:
+				word_indices.append(start_ch)
+			for word in words:
+				if word in dictionary:
+					index = dictionary[word]
+				else:
+					index = 0
+				word_indices.append(index)
+			documents_indices.append(word_indices)
+				
+		return documents_indices
+
 	# indices to words
 	def reverse(self, indices,  num_words = None, ignore_freq_than = 1000000000, wordsStat = None):
 		assert isinstance(indices, np.ndarray)
@@ -418,7 +452,10 @@ class WordCounter(object):
 	    documents_indices = []
 	    for word, _ in counts:
 	        dictionary[word] = len(dictionary)
+	    num_not_in = 0
 	    for word, index in dictionary.items():
 	        if word in model.wv:
 	            words_matrix[index][:] = model.wv[word]
-	    return words_matrix
+	        else:
+	        	num_not_in += 1
+	    return words_matrix, num_not_in
