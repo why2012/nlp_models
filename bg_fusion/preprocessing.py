@@ -24,8 +24,31 @@ def auto_padding(X_list, sentence_size = 100, unkown_word_indicator = 0):
 			return_X_list[-1][i][:] = x[:sentence_size]
 	return return_X_list, (min_len, max_len)
 
-def make_n_gram(words, n_gram_value):
-	return zip(*[words[i:] for i in range(n_gram_value)])
+# like conv layer with strides and padding
+# if padding == valid: output_size = ceil(input_size - n_gram + 1) / strides
+# if padding == same: output_size = ceil(input_size / strides)
+# even padding size on left, odd padding size on right
+def make_n_gram(words, n_gram_value, strides = 1, padding = "valid"):
+	padding = padding.lower()
+	if padding == "valid":
+		pass
+	elif padding == "same":
+		# padding_size = words_len - (words_len - n_gram_value + 1) = n_gram_value - 1
+		padding_size = n_gram_value - 1
+		# even size on left
+		padding_left_size = np.ceil(padding_size / 2).astype(np.int32)
+		# odd size on right
+		padding_right_size = padding_size // 2
+		words = np.pad(words, [(padding_left_size, padding_right_size)], "constant", constant_values=[0] * 2)
+	else:
+		raise Exception("Unkown padding mode")
+	n_grams = list(zip(*[words[i:] for i in range(n_gram_value)]))
+	if strides > 1:
+		_n_grams = n_grams
+		n_grams = []
+		for gram_i in range(0, len(_n_grams), strides):
+			n_grams.append(_n_grams[gram_i])
+	return n_grams
 
 class SamplePool(metaclass=ABCMeta):
 	__metaclass__ = ABCMeta
@@ -372,8 +395,7 @@ class WordCounter(object):
 		return documents_indices
 
 	# indices to words
-	def reverse(self, indices,  num_words = None, ignore_freq_than = 1000000000, wordsStat = None):
-		assert isinstance(indices, np.ndarray)
+	def reverse(self, indices,  num_words = None, ignore_freq_than = 1000000000, wordsStat = None, return_list = False):
 		counts = [["unk", -1]]
 		if num_words is None:
 			num_words = len(self.words_list) + 1
@@ -394,7 +416,10 @@ class WordCounter(object):
 					doc_words.append(dictionary[word_index])
 				else:
 					doc_words.append(dictionary[0])
-			docs.append(" ".join(doc_words))
+			if not return_list:
+				docs.append(" ".join(doc_words))
+			else:
+				docs.append(doc_words)
 		return docs
 
 	def get_i2w_dictionary(self, num_words = None):
