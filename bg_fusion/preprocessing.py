@@ -9,6 +9,7 @@ from abc import ABCMeta, abstractmethod
 from collections import defaultdict, namedtuple
 from functools import reduce
 from scipy.sparse import csc_matrix, csr_matrix, coo_matrix
+import re
 
 def auto_padding(X_list, sentence_size = 100, unkown_word_indicator = 0):
 	t = [len(x) for X in X_list for x in X]
@@ -272,7 +273,12 @@ class WordCounter(object):
 			raise Exception("filepath list is empty or not a list")
 
 	def __clean_text(self, content):
+		
 		content = content.replace('\n',' ').replace('<br />', ' ')
+		# punctuation = """"""
+		# for p in punctuation:
+		# 	content = content.replace(p, " %s " % p)
+		content = re.sub(r"([.,?!:;()\{\}\[\]])", r" \1 ", content)
 		return content
 	
 	def fit(self, filepath_list, target_col = None, clean_text_func = None):
@@ -467,20 +473,21 @@ class WordCounter(object):
 			doc_onehot.append(coomat)
 		return doc_onehot
 
-	def get_pretrain_embedding(self, model, num_words = None, size = 200):
-	    words_matrix = np.random.randn(num_words, size)
+	def get_pretrain_embedding(self, model, num_words = None, size = 300):
+	    words_matrix = self.random.rand(num_words, size)
 	    counts = [["unk", -1]]
 	    if num_words is None:
 	        num_words = len(self.words_list) + 1
 	    counts.extend(self.most_common(num_words - 1))
 	    dictionary = {}
-	    documents_indices = []
 	    for word, _ in counts:
 	        dictionary[word] = len(dictionary)
 	    num_not_in = 0
+	    not_in_list = []
 	    for word, index in dictionary.items():
 	        if word in model.wv:
 	            words_matrix[index][:] = model.wv[word]
 	        else:
 	        	num_not_in += 1
-	    return words_matrix, num_not_in
+	        	not_in_list.append(word)
+	    return words_matrix, not_in_list
