@@ -10,6 +10,7 @@ from collections import defaultdict, namedtuple
 from functools import reduce
 from scipy.sparse import csc_matrix, csr_matrix, coo_matrix
 import re
+import copy
 
 def auto_padding(X_list, sentence_size = 100, unkown_word_indicator = 0):
 	t = [len(x) for X in X_list for x in X]
@@ -111,9 +112,33 @@ class InMemorySamplePool(SamplePool):
 				self.iter_index = 0
 		return iter_samples
 
+# cut long sequence into multi subsequenced with length unroll_num
+class Unroller(object):
+	def __init__(self, X, y = None, unroll_num = 400, padding_val = 0):
+		self.X = []
+		self.y = []
+		self.unroll_num = unroll_num
+		for x_i, x in enumerate(X):
+			x_len = len(x)
+			normalized_x_len = self.unroll_num * np.ceil(x_len / self.unroll_num).astype(np.int32)
+			for start_i in range(0, normalized_x_len, unroll_num):
+				x_slice = x[start_i: start_i + unroll_num]
+				if len(x_slice) < unroll_num:
+					padding_size = unroll_num - len(x_slice)
+					x_slice = np.pad(x_slice, [(0, padding_size)], "constant", constant_values=[padding_val] * 2)
+				else:
+					x_slice = np.array(x_slice)
+				self.X.append(x_slice)
+				if y is not None:
+					self.y.append(y[x_i])
+		if y is None:
+			self.y = None
+
+
 class AutoPaddingInMemorySamplePool(InMemorySamplePool):
-	def __init__(self, samples, bins_count, chunk_size = 1000, pading_val = 0, unkown_word_indicator = 0, mode = "random", cut = True, roulette_cycle = None):
-		super(AutoPaddingInMemorySamplePool, self).__init__(samples=np.ndarray(1), chunk_size=chunk_size)
+	def __init__(self, samples, bins_count, batch_size=1000, pading_val=0, unkown_word_indicator=0, mode="random",
+				 cut=True, roulette_cycle=None, y=None, get_y_in_batch=True, unroll_num = None):
+		super(AutoPaddingInMemorySamplePool, self).__init__(samples=np.ndarray(1), chunk_size=batch_size)
 		self.bins_count = bins_count
 		self.pading_val = pading_val
 		self.unkown_word_indicator = unkown_word_indicator
@@ -122,6 +147,13 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 		self.mode = mode
 		self.cut = cut
 		self.roulette_cycle = roulette_cycle
+		self.y = y
+		self._sorted_y = None
+		self.get_y_in_batch = get_y_in_batch
+		if unroll_num is not None:
+			unroller = Unroller(samples, y, unroll_num=unroll_num)
+			samples = unroller.X
+			self.y = unroller.y
 		self.build(samples)
 
 	def build(self, samples):
@@ -164,6 +196,14 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 	def sorted_samples(self):
 		return self._samples[self.sorted_indices]
 
+	@property
+	def sorted_y(self):
+		if self.y is None:
+			raise Exception("y is None")
+		if self._sorted_y is None:
+			self._sorted_y = np.array(self.y)[self.sorted_indices]
+		return self._sorted_y
+
 	def __next__(self):
 		if self.mode == "random":
 			start_index_i = np.random.choice(self.bins_count, 1)[0]
@@ -197,7 +237,10 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 			elif isinstance(sample, (coo_matrix, csr_matrix, csc_matrix)):
 				return_batch_samples[i, sample.row, sample.col] = sample.data # 1
 		self.chunk_indices_list += start_index
-		return return_batch_samples
+		if not self.get_y_in_batch:
+			return return_batch_samples
+		else:
+			return return_batch_samples, self.sorted_y[self.chunk_indices_list]
 		
 
 # file must be saved as csv with header 
@@ -224,7 +267,8 @@ class OutMemorySamplePool(SamplePool):
 	
 	def __get_chunk__(self):
 		current_chunk_size = None
-		while(1):
+		extra_chunk_size = -1
+		while 1:
 			if self.dataframe_iter is None:
 				self.dataframe_iter = pd.read_csv(self.sample_filepath_list[self.dataframe_iter_index], usecols=[self.target_col_name], iterator=True, chunksize=self.chunk_size, encoding="utf-8")
 				self.dataframe_iter_index = (self.dataframe_iter_index + 1) % len(self.sample_filepath_list)
@@ -263,11 +307,24 @@ class OutMemorySamplePool(SamplePool):
 		return self.__get_chunk__()
 
 class WordCounter(object):
-	def __init__(self, seed = 0):
+	def __init__(self, seed = 0, lower_case = False):
 		self.tok = nltk.tokenize.toktok.ToktokTokenizer()
 		self.words_list = []
 		self.target_col = None
 		self.random =  np.random.RandomState(seed)
+		self.lower_case = lower_case
+		self.unk_tag = "unk"
+		self.bos_tag = "<bos>"
+		self.eos_tag = "</eos>"
+		self.unk_index = 0
+		self.bos_index = 1
+		self.eos_index = 2
+		self._default_counts = [["unk", -1], [self.bos_tag, -1], [self.eos_tag, -1]]
+		self.default_counts_len = len(self.default_counts)
+
+	@property
+	def default_counts(self):
+		return copy.deepcopy(self._default_counts)
 		
 	def __check_filepath_list(self, filepath_list):
 		if filepath_list is None or not isinstance(filepath_list, list) or len(filepath_list) == 0:
@@ -279,64 +336,75 @@ class WordCounter(object):
 		# punctuation = """"""
 		# for p in punctuation:
 		# 	content = content.replace(p, " %s " % p)
-		content = re.sub(r"([.,?!:;()\{\}\[\]])", r" \1 ", content)
+		content = re.sub(r"([.,?!:;(){}\[\]])", r" \1 ", content)
 		return content
 	
-	def fit(self, filepath_list, target_col = None, clean_text_func = None):
+	def fit(self, filepath_list, target_col = None, clean_text_func = None, doc_count_threshold = None):
 		self.__check_filepath_list(filepath_list)
 		self.target_col = target_col
 		counter = defaultdict(lambda: 0)
 		if clean_text_func is None:
 			clean_text_func = self.__clean_text
+		doc_counts = defaultdict(int)
 		for filepath in filepath_list:
 			if self.target_col is not None:
 				data_df_iter = pd.read_csv(filepath, iterator=True, usecols=[self.target_col], chunksize=100000, encoding="utf-8")
 				for chunk in data_df_iter:
 					for content in chunk[target_col]:
+						doc_seen = set()
 						content = clean_text_func(content)
-						words = [w.lower() for w in self.tok.tokenize(content)]
+						words = [w.lower() if self.lower_case else w for w in self.tok.tokenize(content)]
 						for word in words:
 							counter[word] += 1
+							if word not in doc_seen:
+								doc_counts[word] += 1
+								doc_seen.add(word)
 			else:
 				data_iter = open(filepath, 'r', encoding="utf-8")
 				for content in data_iter:
+					doc_seen = set()
 					content = clean_text_func(content)
-					words = [w.lower() for w in self.tok.tokenize(content)]
+					words = [w.lower() if self.lower_case else w for w in self.tok.tokenize(content)]
 					for word in words:
 						counter[word] += 1
-		self.words_list = list(counter.items())
+						if word not in doc_seen:
+							doc_counts[word] += 1
+							doc_seen.add(word)
+		if doc_count_threshold is not None:
+			self.words_list = [(term, freq) for term, freq in counter.items() if doc_counts[term] > doc_count_threshold]
+		else:
+			self.words_list = list(counter.items())
 		self.words_list.sort(key=lambda x: -x[1])
 
 	# higher the frequency, easier to erase out
 	def getWordsStatistics(self, sentences, sample = 1e-4):
 		WordStat = namedtuple("WordStat", ["count", "sample_int"])
-		wordsStat = defaultdict(lambda: {"count": 0, "sample_int": sample})
+		wordsStat = defaultdict(lambda : WordStat(count=0, sample_int=sample))
 		retain_total = 0
 		for sent in sentences:
 			for word in sent:
-				wordsStat[word]["count"] += 1
+				wordsStat[word].count += 1
 				retain_total += 1
 		threshold_count = sample * retain_total
 		for w in wordsStat:
-			v = wordsStat[w]["count"]
+			v = wordsStat[w].count
 			word_probability = (np.sqrt(v / threshold_count) + 1) * (threshold_count / v) # p ~= sqrt(threshold_count / count), count up, p down
 			if word_probability > 1.0:
 				word_probability = 1.0
-			wordsStat[w]["sample_int"] = int(round(word_probability * 2**32))
-			wordsStat[w] = WordStat(count=wordsStat[w]["count"], sample_int=wordsStat[w]["sample_int"])
+			wordsStat[w].sample_int = int(round(word_probability * 2**32))
 		return wordsStat
 	
 	def most_common(self, vocab_size):
 		return self.words_list[:vocab_size]
 	
-	def transform(self, filepath_list, max_words = None, clean_text_func = None, start_ch = None):
+	def transform(self, filepath_list, max_words = None, clean_text_func = None, start_ch = None, include_unk = False):
 		self.__check_filepath_list(filepath_list)
 		if clean_text_func is None:
 			clean_text_func = self.__clean_text
-		counts = [["unk", -1]]
+		counts = self.default_counts
 		if max_words is None:
-			max_words = len(self.words_list) + 1
-		counts.extend(self.most_common(max_words - 1))
+			max_words = len(self.words_list) + self.default_counts_len
+		counts.extend(self.most_common(max_words - self.default_counts_len))
 		dictionary = {}
 		documents_indices = []
 		for word, _ in counts:
@@ -347,40 +415,47 @@ class WordCounter(object):
 				for chunk in data_df_iter:
 					for content in chunk[self.target_col]:
 						content = clean_text_func(content)
-						words = [w.lower() for w in self.tok.tokenize(content)]
+						words = [w.lower() if self.lower_case else w for w in self.tok.tokenize(content)]
+						word_indices = [self.bos_index]
 						if start_ch is not None:
 							word_indices.append(start_ch)
 						for word in words:
 							if word in dictionary:
 								index = dictionary[word]
+								word_indices.append(index)
 							else:
-								index = 0
-							word_indices.append(index)
+								if include_unk:
+									index = 0
+									word_indices.append(index)
+						word_indices.append(self.eos_index)
 						documents_indices.append(word_indices)
 			else:
 				data_iter = open(filepath, 'r', encoding="utf-8")
 				for content in data_iter:
 					content = clean_text_func(content)
-					words = [w.lower() for w in self.tok.tokenize(content)]
-					word_indices = []
+					words = [w.lower() if self.lower_case else w for w in self.tok.tokenize(content)]
+					word_indices = [self.bos_index]
 					if start_ch is not None:
 						word_indices.append(start_ch)
 					for word in words:
 						if word in dictionary:
 							index = dictionary[word]
+							word_indices.append(index)
 						else:
-							index = 0
-						word_indices.append(index)
+							if include_unk:
+								index = 0
+								word_indices.append(index)
+					word_indices.append(self.eos_index)
 					documents_indices.append(word_indices)
 		return documents_indices
 
-	def transform_docs(self, docs, max_words = None, clean_text_func = None, start_ch = None):
+	def transform_docs(self, docs, max_words = None, clean_text_func = None, start_ch = None, include_unk = False):
 		if clean_text_func is None:
 			clean_text_func = self.__clean_text
-		counts = [["unk", -1]]
+		counts = self.default_counts
 		if max_words is None:
-			max_words = len(self.words_list) + 1
-		counts.extend(self.most_common(max_words - 1))
+			max_words = len(self.words_list) + self.default_counts_len
+		counts.extend(self.most_common(max_words - self.default_counts_len))
 		dictionary = {}
 		documents_indices = []
 		for word, _ in counts:
@@ -388,25 +463,28 @@ class WordCounter(object):
 		for content in docs:
 			content = clean_text_func(content)
 			words = [w.lower() for w in self.tok.tokenize(content)]
-			word_indices = []
+			word_indices = [self.bos_index]
 			if start_ch is not None:
 				word_indices.append(start_ch)
 			for word in words:
 				if word in dictionary:
 					index = dictionary[word]
+					word_indices.append(index)
 				else:
-					index = 0
-				word_indices.append(index)
+					if include_unk:
+						index = 0
+						word_indices.append(index)
+				word_indices.append(self.eos_index)
 			documents_indices.append(word_indices)
 				
 		return documents_indices
 
 	# indices to words
 	def reverse(self, indices,  num_words = None, ignore_freq_than = 1000000000, wordsStat = None, return_list = False):
-		counts = [["unk", -1]]
+		counts = self.default_counts
 		if num_words is None:
-			num_words = len(self.words_list) + 1
-		counts.extend(self.most_common(num_words - 1))
+			num_words = len(self.words_list) + self.default_counts_len
+		counts.extend(self.most_common(num_words - self.default_counts_len))
 		dictionary = {}
 		freq_dist = {}
 		for word, freq in counts:
@@ -430,20 +508,20 @@ class WordCounter(object):
 		return docs
 
 	def get_i2w_dictionary(self, num_words = None):
-		counts = [["unk", -1]]
+		counts = self.default_counts
 		if num_words is None:
-			num_words = len(self.words_list) + 1
-		counts.extend(self.most_common(num_words - 1))
+			num_words = len(self.words_list) + self.default_counts_len
+		counts.extend(self.most_common(num_words - self.default_counts_len))
 		dictionary = {}
 		for word, freq in counts:
 			dictionary[len(dictionary)] = word
 		return dictionary
 
 	def get_w2i_dictionary(self, num_words = None):
-		counts = [["unk", -1]]
+		counts = self.default_counts
 		if num_words is None:
-			num_words = len(self.words_list) + 1
-		counts.extend(self.most_common(num_words - 1))
+			num_words = len(self.words_list) + self.default_counts_len
+		counts.extend(self.most_common(num_words - self.default_counts_len))
 		dictionary = {}
 		for word, freq in counts:
 			dictionary[word] = len(dictionary)
@@ -475,20 +553,20 @@ class WordCounter(object):
 		return doc_onehot
 
 	def get_pretrain_embedding(self, model, num_words = None, size = 300):
-	    words_matrix = self.random.rand(num_words, size)
-	    counts = [["unk", -1]]
-	    if num_words is None:
-	        num_words = len(self.words_list) + 1
-	    counts.extend(self.most_common(num_words - 1))
-	    dictionary = {}
-	    for word, _ in counts:
-	        dictionary[word] = len(dictionary)
-	    num_not_in = 0
-	    not_in_list = []
-	    for word, index in dictionary.items():
-	        if word in model.wv:
-	            words_matrix[index][:] = model.wv[word]
-	        else:
-	        	num_not_in += 1
-	        	not_in_list.append(word)
-	    return words_matrix, not_in_list
+		words_matrix = self.random.rand(num_words, size)
+		counts = self.default_counts
+		if num_words is None:
+			num_words = len(self.words_list) + self.default_counts_len
+		counts.extend(self.most_common(num_words - self.default_counts_len))
+		dictionary = {}
+		for word, _ in counts:
+			dictionary[word] = len(dictionary)
+		num_not_in = 0
+		not_in_list = []
+		for word, index in dictionary.items():
+			if word in model.wv:
+				words_matrix[index][:] = model.wv[word]
+			else:
+				num_not_in += 1
+				not_in_list.append(word)
+		return words_matrix, not_in_list
