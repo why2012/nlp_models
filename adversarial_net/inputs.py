@@ -5,7 +5,8 @@ from __future__ import print_function
 import numpy as np
 import pickle
 from os import path as osp
-from preprocessing import AutoPaddingInMemorySamplePool, WordCounter
+import tensorflow as tf
+from adversarial_net.preprocessing import AutoPaddingInMemorySamplePool, WordCounter
 
 class DataLoader(object):
     def __init__(self, base_dir, dataset):
@@ -51,6 +52,7 @@ class DataLoader(object):
 
         training_data_permutation = self.rand.permutation(len(training_data))
         testing_data_permutation = self.rand.permutation(len(testing_data))
+        unsup_data_permutation = []
         if include_unsup:
             unsup_data_permutation = self.rand.permutation(len(unsup_data))
 
@@ -65,3 +67,49 @@ class DataLoader(object):
             return (training_data, training_label), (testing_data, testing_label), (unsup_data, )
         else:
             return (training_data, training_label), (testing_data, testing_label)
+
+def construct_data_queue(data_pool, n_thread, batch_size, collection_name=tf.GraphKeys.QUEUE_RUNNERS,
+                         queue_class=tf.FIFOQueue, threshold=100):
+    from multiprocessing import Lock
+    import traceback
+    # lock = Lock()
+    def enqueue_func():
+        data = []
+        try:
+            # lock.acquire()
+            data = data_pool.__next__()
+        except Exception as e:
+            print(e)
+            traceback.print_exc()
+        finally:
+            # lock.release()
+            1
+        return data
+    if data_pool.get_y_in_batch:
+        dtypes = [tf.int32, tf.int32]
+        enqueue_tensor_name = "sample_and_label_py_func"
+        queue_name = "sample_and_label_queue"
+        enqueue_name = "sample_and_label_enqueue"
+        dequeue_name = "sample_and_label_dequeue"
+        queue_shape = [[data_pool.unroll_num], [1]]
+    else:
+        dtypes = [tf.int32]
+        enqueue_tensor_name = "sample__py_func"
+        queue_name = "sample_queue"
+        enqueue_name = "sample_enqueue"
+        dequeue_name = "sample_dequeue"
+        queue_shape = [[data_pool.unroll_num]]
+    enqueue_tensors = tf.py_func(enqueue_func, [], dtypes, name=enqueue_tensor_name)
+    if queue_class == tf.RandomShuffleQueue:
+        queue = queue_class(batch_size * threshold, dtypes=dtypes,
+                            min_after_dequeue=batch_size * np.ceil(threshold / 20).astype(np.int32), shapes=queue_shape,
+                            name=queue_name)
+    else:
+        queue = queue_class(batch_size * threshold, dtypes, name=queue_name, shapes=queue_shape)
+    enqueue_op = queue.enqueue_many(enqueue_tensors, name=enqueue_name)
+    dequeue_op = queue.dequeue_many(batch_size, name=dequeue_name)
+    queue_runner = tf.train.QueueRunner(queue, [enqueue_op] * n_thread)
+    tf.add_to_collection(collection_name, queue_runner)
+
+    return dequeue_op
+

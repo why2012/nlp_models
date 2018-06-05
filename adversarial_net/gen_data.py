@@ -7,7 +7,7 @@ import glob
 from os import path as osp
 import pickle
 import argparse
-from preprocessing import WordCounter
+from adversarial_net.preprocessing import WordCounter
 from utils import getLogger
 
 parser = argparse.ArgumentParser()

@@ -11,6 +11,7 @@ from functools import reduce
 from scipy.sparse import csc_matrix, csr_matrix, coo_matrix
 import re
 import copy
+from adversarial_net.utils import MutexVariable
 
 def auto_padding(X_list, sentence_size = 100, unkown_word_indicator = 0):
 	t = [len(x) for X in X_list for x in X]
@@ -89,28 +90,58 @@ class InMemorySamplePool(SamplePool):
 		super(InMemorySamplePool, self).extend(samplepool_to_extend)
 		self.samples = np.concatenate([self.samples, samplepool_to_extend.samples])
 	
-	def __next__(self, cut = False):
-		assert len(self.samples) >= self.chunk_size
-		if self.iter_index + self.chunk_size <= len(self.samples):
-			iter_samples = self.samples[self.iter_index: self.iter_index + self.chunk_size]
-			self.chunk_indices_list = np.array(list(range(self.iter_index, self.iter_index + self.chunk_size)))
-			self.iter_index = (self.iter_index + self.chunk_size) % len(self.samples)
+	def __next__(self, cut = False, samples = None, iter_index = None, return_chunk_indices_list = False):
+		if samples is None:
+			samples = self.samples
+		if iter_index is None:
+			iter_index = self.iter_index
+		assert len(samples) >= self.chunk_size
+		iter_index_mutex = None
+		chunk_indices_list = None
+		if isinstance(iter_index, MutexVariable):
+			iter_index_mutex = iter_index
+			iter_index = iter_index_mutex.value
+		else:
+			iter_index = iter_index
+		if iter_index + self.chunk_size <= len(samples):
+			new_iter_index = (iter_index + self.chunk_size) % len(samples)
+			if iter_index_mutex is not None and isinstance(iter_index_mutex, MutexVariable):
+				iter_index_mutex.value = new_iter_index
+				iter_index_mutex.release()
+			else:
+				self.iter_index = new_iter_index
+			iter_samples = samples[iter_index: iter_index + self.chunk_size]
+			chunk_indices_list = np.array(list(range(iter_index, iter_index + self.chunk_size)))
 		else:
 			if not cut:
-				iter_samples_1 = self.samples[self.iter_index:]
-				chunk_indices_1 = list(range(self.iter_index, len(self.samples)))
-				self.iter_index = (self.iter_index + self.chunk_size) % len(self.samples)
-				iter_samples_2 = self.samples[:self.iter_index]
-				chunk_indices_2 = list(range(0, self.iter_index))
+				new_iter_index = (iter_index + self.chunk_size) % len(samples)
+				if iter_index_mutex is not None and isinstance(iter_index_mutex, MutexVariable):
+					iter_index_mutex.value = new_iter_index
+					iter_index_mutex.release()
+				else:
+					self.iter_index = new_iter_index
+				iter_samples_1 = samples[iter_index:]
+				chunk_indices_1 = list(range(iter_index, len(samples)))
+				iter_index = new_iter_index
+				iter_samples_2 = samples[:iter_index]
+				chunk_indices_2 = list(range(0, iter_index))
 				iter_samples = np.concatenate([iter_samples_1, iter_samples_2]) 
 				chunk_indices = np.concatenate([chunk_indices_1, chunk_indices_2]) 
-				self.chunk_indices_list = chunk_indices
+				chunk_indices_list = chunk_indices
 			else:
-				self.chunk_indices_list = np.zeros(len(self.samples) - self.iter_index, dtype=np.int32)
-				iter_samples = self.samples[self.iter_index:]
-				self.chunk_indices_list[:] = list(range(self.iter_index, len(self.samples)))
-				self.iter_index = 0
-		return iter_samples
+				if iter_index_mutex is not None and isinstance(iter_index_mutex, MutexVariable):
+					iter_index_mutex.value = 0
+					iter_index_mutex.release()
+				else:
+					self.iter_index = 0
+				chunk_indices_list = np.zeros(len(samples) - iter_index, dtype=np.int32)
+				iter_samples = samples[iter_index:]
+				chunk_indices_list[:] = list(range(iter_index, len(samples)))
+		if not return_chunk_indices_list:
+			self.chunk_indices_list = chunk_indices_list
+			return iter_samples
+		else:
+			return iter_samples, chunk_indices_list
 
 # cut long sequence into multi subsequenced with length unroll_num
 class Unroller(object):
@@ -142,7 +173,7 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 		self.bins_count = bins_count
 		self.pading_val = pading_val
 		self.unkown_word_indicator = unkown_word_indicator
-		self.iter_index_map = defaultdict(int)
+		self.iter_index_map = dict([(i, MutexVariable(0, name="iter_index_%s" % i)) for i in range(self.bins_count)])
 		assert mode in ["random", "specific"]
 		self.mode = mode
 		self.cut = cut
@@ -150,7 +181,8 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 		self.y = y
 		self._sorted_y = None
 		self.get_y_in_batch = get_y_in_batch
-		if unroll_num is not None:
+		self.unroll_num = unroll_num
+		if unroll_num is not None and unroll_num > 0:
 			unroller = Unroller(samples, y, unroll_num=unroll_num)
 			samples = unroller.X
 			self.y = unroller.y
@@ -175,15 +207,15 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 		self.min_gap = min([self.bins_bucket_edges[i + 1] - self.bins_bucket_edges[i] for i in range(self.bins_count)])
 		self.bins_lens = [np.max(lens[self.bins_bucket_edges[i]: self.bins_bucket_edges[i + 1]]) for i in range(self.bins_count)]
 		self.choice_roulette = reduce(lambda x, y: x + y, [[i] * np.ceil((self.bins_bucket_edges[i + 1] - self.bins_bucket_edges[i]) / self.chunk_size).astype(np.int32) for i in range(self.bins_count)])
-		self.choice_index = 0
+		self.choice_index = MutexVariable(0, name="choice_index")
 		if self.roulette_cycle is None:
 			self.steps = len(self.choice_roulette)
 		else:
 			self.steps = len(self.roulette_cycle)
 
 	def reset(self):
-		self.iter_index_map = defaultdict(int)
-		self.choice_index = 0
+		self.iter_index_map = dict([(i, MutexVariable(0, name="iter_index_%s" % i)) for i in range(self.bins_count)])
+		self.choice_index = MutexVariable(0, name="choice_index")
 
 	def extend(self, samplepool_to_extend):
 		super(AutoPaddingInMemorySamplePool, self).extend(samplepool_to_extend)
@@ -201,28 +233,39 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 		if self.y is None:
 			raise Exception("y is None")
 		if self._sorted_y is None:
-			self._sorted_y = np.array(self.y)[self.sorted_indices]
+			self._sorted_y = np.array(self.y, dtype=np.int32)[self.sorted_indices]
 		return self._sorted_y
 
+	# parallel on pool level, serial on bucket level
 	def __next__(self):
 		if self.mode == "random":
 			start_index_i = np.random.choice(self.bins_count, 1)[0]
 			cut = False
 		else:
 			if self.roulette_cycle is None:
-				start_index_i = self.choice_roulette[self.choice_index]
-				self.choice_index = (self.choice_index + 1) % len(self.choice_roulette)
+				self.choice_index.acquire()
+				start_index_i = self.choice_roulette[self.choice_index.value]
+				self.choice_index.value = (self.choice_index + 1) % len(self.choice_roulette)
+				self.choice_index.release()
 			else:
-				start_index_i = self.choice_roulette[self.roulette_cycle[self.choice_index]]
-				self.choice_index = (self.choice_index + 1) % len(self.roulette_cycle)
+				self.choice_index.acquire()
+				start_index_i = self.choice_roulette[self.roulette_cycle[self.choice_index.value]]
+				self.choice_index.value = (self.choice_index + 1) % len(self.roulette_cycle)
+				self.choice_index.release()
 			cut = self.cut
 		end_index_i = start_index_i + 1
 		start_index = self.bins_bucket_edges[start_index_i]
 		end_index = self.bins_bucket_edges[end_index_i]
-		self.samples = self._samples[self.sorted_indices[start_index: end_index]]
-		self.iter_index = self.iter_index_map[start_index_i]
-		batch_samples = super(AutoPaddingInMemorySamplePool, self).__next__(cut=cut)
-		self.iter_index_map[start_index_i] = self.iter_index
+		samples = self._samples[self.sorted_indices[start_index: end_index]]
+		if isinstance(self.iter_index_map[start_index_i], MutexVariable):
+			# release in __next__
+			self.iter_index_map[start_index_i].acquire()
+		iter_index = self.iter_index_map[start_index_i]
+		batch_samples, chunk_indices_list = super(AutoPaddingInMemorySamplePool, self).__next__(cut=cut,
+																								samples=samples,
+																								iter_index=iter_index,
+																								return_chunk_indices_list=True)
+		self.iter_index_map[start_index_i] = iter_index
 		batch_len = self.bins_lens[start_index_i]
 		if isinstance(batch_samples[0], (coo_matrix, csr_matrix, csc_matrix)):
 			return_batch_samples = np.zeros((len(batch_samples), batch_len, batch_samples[0].shape[1]), dtype=np.int32)
@@ -236,11 +279,11 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 				return_batch_samples[i] = sample
 			elif isinstance(sample, (coo_matrix, csr_matrix, csc_matrix)):
 				return_batch_samples[i, sample.row, sample.col] = sample.data # 1
-		self.chunk_indices_list += start_index
+		chunk_indices_list += start_index
 		if not self.get_y_in_batch:
 			return return_batch_samples
 		else:
-			return return_batch_samples, self.sorted_y[self.chunk_indices_list]
+			return return_batch_samples, self.sorted_y[chunk_indices_list]
 		
 
 # file must be saved as csv with header 
