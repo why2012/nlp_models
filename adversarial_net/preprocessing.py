@@ -75,6 +75,42 @@ class SamplePool(metaclass=ABCMeta):
 	def __next__(self):
 		pass
 
+class SimpleInMemorySamplePool(SamplePool):
+	def __init__(self, samples, chunk_size):
+		super(SimpleInMemorySamplePool, self).__init__(chunk_size)
+		self.samples = samples
+		self.iter_index = MutexVariable(0)
+
+	def reset(self):
+		self.iter_index = MutexVariable(0)
+
+	def extend(self, samplepool_to_extend):
+		super(SimpleInMemorySamplePool, self).extend(samplepool_to_extend)
+		self.samples = np.concatenate([self.samples, samplepool_to_extend.samples])
+
+	def __next__(self):
+		chunk_size = self.chunk_size
+		n_samples = len(self.samples)
+		samples = self.samples
+
+		self.iter_index.acquire()
+		iter_index_value = self.iter_index.value
+		new_iter_index_value = (iter_index_value + chunk_size) % n_samples
+		self.iter_index.value = new_iter_index_value
+		self.iter_index.release()
+
+		if iter_index_value + chunk_size <= n_samples:
+			batch_samples = samples[iter_index_value: iter_index_value + chunk_size]
+			chunk_indices_list = np.array(list(range(iter_index_value, iter_index_value + chunk_size)))
+		else:
+			iter_samples_1 = samples[iter_index_value:]
+			chunk_indices_1 = list(range(iter_index_value, n_samples))
+			iter_samples_2 = samples[:new_iter_index_value]
+			chunk_indices_2 = list(range(0, new_iter_index_value))
+			batch_samples = np.concatenate([iter_samples_1, iter_samples_2])
+			chunk_indices_list = np.concatenate([chunk_indices_1, chunk_indices_2])
+		return batch_samples, chunk_indices_list
+
 class InMemorySamplePool(SamplePool):
 	def __init__(self, samples, chunk_size = 1000):
 		super(InMemorySamplePool, self).__init__(chunk_size=chunk_size)
@@ -97,7 +133,6 @@ class InMemorySamplePool(SamplePool):
 			iter_index = self.iter_index
 		assert len(samples) >= self.chunk_size
 		iter_index_mutex = None
-		chunk_indices_list = None
 		if isinstance(iter_index, MutexVariable):
 			iter_index_mutex = iter_index
 			iter_index = iter_index_mutex.value
@@ -149,11 +184,13 @@ class Unroller(object):
 		self.X = []
 		self.y = []
 		self.unroll_num = unroll_num
+		self.X_sequence_len = []
 		for x_i, x in enumerate(X):
 			x_len = len(x)
 			normalized_x_len = self.unroll_num * np.ceil(x_len / self.unroll_num).astype(np.int32)
 			for start_i in range(0, normalized_x_len, unroll_num):
 				x_slice = x[start_i: start_i + unroll_num]
+				self.X_sequence_len.append(len(x_slice))
 				if len(x_slice) < unroll_num:
 					padding_size = unroll_num - len(x_slice)
 					x_slice = np.pad(x_slice, [(0, padding_size)], "constant", constant_values=[padding_val] * 2)
@@ -167,8 +204,8 @@ class Unroller(object):
 
 
 class AutoPaddingInMemorySamplePool(InMemorySamplePool):
-	def __init__(self, samples, bins_count, batch_size=1000, pading_val=0, unkown_word_indicator=0, mode="random",
-				 cut=True, roulette_cycle=None, y=None, get_y_in_batch=True, unroll_num = None):
+	def __init__(self, samples, bins_count, batch_size=1000, pading_val=0, unkown_word_indicator=0, mode="random", y_is_sequence = False,
+				 cut=True, roulette_cycle=None, y=None, get_y_in_batch=True, get_sequence_len_in_batch = True, unroll_num = -1):
 		super(AutoPaddingInMemorySamplePool, self).__init__(samples=np.ndarray(1), chunk_size=batch_size)
 		self.bins_count = bins_count
 		self.pading_val = pading_val
@@ -181,11 +218,23 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 		self.y = y
 		self._sorted_y = None
 		self.get_y_in_batch = get_y_in_batch
+		self.get_sequence_len_in_batch = get_sequence_len_in_batch
+		self._sequence_len = None
 		self.unroll_num = unroll_num
-		if unroll_num is not None and unroll_num > 0:
-			unroller = Unroller(samples, y, unroll_num=unroll_num)
-			samples = unroller.X
-			self.y = unroller.y
+		self.y_is_sequence = y_is_sequence
+		if unroll_num > 0:
+			if not y_is_sequence:
+				unroller = Unroller(samples, y, unroll_num=unroll_num)
+				samples = unroller.X
+				self.y = unroller.y
+				self._sequence_len = unroller.X_sequence_len
+			else:
+				unroller = Unroller(samples, None, unroll_num=unroll_num)
+				samples = unroller.X
+				unroller = Unroller(y, None, unroll_num=unroll_num)
+				self.y = unroller.X
+				self._sequence_len = unroller.X_sequence_len
+
 		self.build(samples)
 
 	def build(self, samples):
@@ -236,6 +285,14 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 			self._sorted_y = np.array(self.y, dtype=np.int32)[self.sorted_indices]
 		return self._sorted_y
 
+	@property
+	def sequence_len(self):
+		if self._sequence_len is None:
+			raise Exception("sequence_len is None, only available when unroll_num > 0")
+		if isinstance(self._sequence_len, list):
+			self._sequence_len = np.array(self._sequence_len)[self.sorted_indices]
+		return self._sequence_len
+
 	# parallel on pool level, serial on bucket level
 	def __next__(self):
 		if self.mode == "random":
@@ -271,19 +328,29 @@ class AutoPaddingInMemorySamplePool(InMemorySamplePool):
 			return_batch_samples = np.zeros((len(batch_samples), batch_len, batch_samples[0].shape[1]), dtype=np.int32)
 		else:
 			return_batch_samples = np.zeros((len(batch_samples), batch_len), dtype=np.int32)
+		cur_batch_sequence_len = np.zeros(len(batch_samples))
 		for i, sample in enumerate(batch_samples):
 			if not isinstance(sample, (coo_matrix, csr_matrix, csc_matrix)):
 				if len(sample) < batch_len:
 					padding_size = batch_len - len(sample)
 					sample = np.pad(sample, [(0, padding_size)], "constant", constant_values=[self.unkown_word_indicator] * 2)
 				return_batch_samples[i] = sample
+				if self.unroll_num < 0:
+					cur_batch_sequence_len[i] = len(sample)
 			elif isinstance(sample, (coo_matrix, csr_matrix, csc_matrix)):
 				return_batch_samples[i, sample.row, sample.col] = sample.data # 1
+				if self.unroll_num < 0:
+					cur_batch_sequence_len[i] = len(sample.data)
 		chunk_indices_list += start_index
-		if not self.get_y_in_batch:
-			return return_batch_samples
-		else:
-			return return_batch_samples, self.sorted_y[chunk_indices_list]
+		# unroll > 0
+		if self.unroll_num > 0:
+			cur_batch_sequence_len = self.sequence_len[chunk_indices_list]
+		return_tuple = [return_batch_samples]
+		if self.get_y_in_batch and self.y:
+			return_tuple.append(self.sorted_y[chunk_indices_list])
+		if self.get_sequence_len_in_batch:
+			return_tuple.append(cur_batch_sequence_len.reshape((-1, 1)))
+		return return_tuple
 		
 
 # file must be saved as csv with header 
@@ -365,6 +432,11 @@ class WordCounter(object):
 		self._default_counts = [["unk", -1], [self.bos_tag, -1], [self.eos_tag, -1]]
 		self.default_counts_len = len(self.default_counts)
 
+	def load(self, datapath):
+		with open(datapath, "rb") as f:
+			self.words_list = pickle.load(f)
+		return self
+
 	@property
 	def default_counts(self):
 		return copy.deepcopy(self._default_counts)
@@ -439,6 +511,13 @@ class WordCounter(object):
 	
 	def most_common(self, vocab_size):
 		return self.words_list[:vocab_size]
+
+	def most_common_freqs(self, max_words):
+		vocab_size = max_words - len(self._default_counts)
+		assert vocab_size >= 0, "vocab_size must greater than or equal to 0"
+		freqs = list(map(lambda x: x[1], self.words_list[:vocab_size]))
+		freqs = [1] * len(self._default_counts) + freqs
+		return freqs
 	
 	def transform(self, filepath_list, max_words = None, clean_text_func = None, start_ch = None, include_unk = False):
 		self.__check_filepath_list(filepath_list)
