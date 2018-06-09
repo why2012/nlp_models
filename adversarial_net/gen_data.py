@@ -129,18 +129,49 @@ def generate_language_training_data(no_need_start_tag = FLAGS.no_need_start_tag)
     logger.info("dataset shape: %s" % X_train_total.shape)
     X = []
     y = []
+    if no_need_start_tag:
+        start_index = 1
+    else:
+        start_index = 0
     for doc in X_train_total:
-        if no_need_start_tag:
-            X.append(doc[1: -1])
-            y.append(doc[2:])
-        else:
-            X.append(doc[0: -1])
-            y.append(doc[1:])
+        X.append(doc[start_index: -1])
+        y.append(doc[start_index + 1:])
     pickle_data = {"X": X, "y": y}
     rand_index = np.random.choice(len(X), 1)[0]
     logger.info("random sampled X: %s" % X[rand_index])
     logger.info("random sampled y: %s" % y[rand_index])
     with open(osp.join(FLAGS.output_dir, "imdb_lm_dataset.pickle"), "wb") as f:
+        pickle.dump(pickle_data, f)
+
+def generate_autoencoder_training_data(no_need_start_tag = FLAGS.no_need_start_tag):
+    dataLoader = DataLoader(base_dir=FLAGS.data_dir, dataset=FLAGS.dataset)
+    (X_train, y_train), (X_test, y_test), (X_unsup,) = dataLoader.load_data(include_unsup=True)
+    if X_unsup is not None:
+        X_train_total = np.concatenate([X_train, X_test, X_unsup])
+    else:
+        X_train_total = np.concatenate([X_train, X_test])
+    logger.info("dataset shape: %s" % X_train_total.shape)
+    X = []
+    y = []
+    weight = []
+    if no_need_start_tag:
+        start_index = 1
+    else:
+        start_index = 0
+    for doc in X_train_total:
+        seq_all = doc[start_index:]
+        seq_but_last = doc[start_index: -1]
+        X.append(np.array(seq_all + seq_but_last).reshape(-1, 1))
+        seq_len = len(seq_all)
+        seq_but_last_len = len(seq_but_last)
+        y.append(np.array([0] * seq_but_last_len + seq_all).reshape(-1, 1))
+        weight.append(np.array([0] * seq_but_last_len + [1] * seq_len, dtype=np.float32).reshape(-1, 1))
+    pickle_data = {"X": X, "y": y, "weight": weight}
+    rand_index = np.random.choice(len(X), 1)[0]
+    logger.info("random sampled X: %s" % X[rand_index])
+    logger.info("random sampled y: %s" % y[rand_index])
+    logger.info("random sampled weight: %s" % weight[rand_index])
+    with open(osp.join(FLAGS.output_dir, "imdb_ae_dataset.pickle"), "wb") as f:
         pickle.dump(pickle_data, f)
 
 def generate_classification_data(validation_rate=FLAGS.validation_rate, shuffle_onval=FLAGS.shuffle_onval,
@@ -200,6 +231,8 @@ if __name__ == "__main__":
             generate_imdb()
     elif FLAGS.action == "gene_lm":
         generate_language_training_data()
+    elif FLAGS.action == "gene_ae":
+        generate_autoencoder_training_data()
     elif FLAGS.action == "gene_classi":
         generate_classification_data()
     else:

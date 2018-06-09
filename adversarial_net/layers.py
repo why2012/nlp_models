@@ -177,7 +177,7 @@ class ClassificationSparseSoftmaxLoss(keras.layers.Layer):
         return tf.identity(tf.reduce_sum(weights * loss) / _num_labels(weights), name='classification_xentropy')
 
 def accuracy(logits, labels, weights):
-    eq = tf.cast(tf.equal(tf.argmax(logits, 1), tf.argmax(labels, 1)), tf.float32)
+    eq = tf.cast(tf.equal(tf.argmax(logits, 1), labels), tf.float32)
     acc = tf.identity(tf.reduce_sum(weights * eq) / _num_labels(weights), name='accuracy')
     return acc
 

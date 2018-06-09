@@ -41,16 +41,35 @@ class ArgumentsBuilder(object):
         if name in self.scope_arguments or name in self.scope_variables or name in self.scope_associations:
             raise Exception("name is conflict with scope: %s" % name)
 
+    def str2bool(self, v):
+        if v == True:
+            return True
+        elif v == False:
+            return False
+        if v.lower() in ('yes', 'true', 't', 'y', '1'):
+            return True
+        elif v.lower() in ('no', 'false', 'f', 'n', '0'):
+            return False
+        else:
+            raise argparse.ArgumentTypeError('Boolean value expected.')
+
     def add_argument(self, name, argtype, scope = None, **kwargs):
         required = False if "default" in kwargs else True
         if scope:
             self._check_scope_conflict(name, scope)
-            self.parser.add_argument("--{scope}_{name}".format(scope=scope, name=name), type=argtype, required=required, **kwargs)
+            arg_name = "--{scope}_{name}".format(scope=scope, name=name)
             self.scope_arguments[scope].append("{scope}_{name}".format(scope=scope, name=name))
         else:
             self._check_name_conflict(name)
-            self.parser.add_argument("--{name}".format(name=name), type=argtype, required=required, **kwargs)
+            arg_name = "--{name}".format(name=name)
             self.name_arguments.append(name)
+        if argtype != bool:
+            if argtype == "bool":
+                self.parser.add_argument(arg_name, type=self.str2bool, required=required, **kwargs)
+            else:
+                self.parser.add_argument(arg_name, type=argtype, required=required, **kwargs)
+        else:
+            self.parser.add_argument(arg_name, action="store_true", **kwargs)
         return self
 
     def add_association(self, name, assoc_name, scope = None, assoc_scope = None):
@@ -124,8 +143,10 @@ class ArgumentsBuilder(object):
                     assoc_scope = self.associations[name][0]
                     assoc_name = self.associations[name][1]
                     value = self.__getitem__(assoc_scope, assoc_find=True)
-                    if value:
+                    if value and assoc_name in value:
                         value = value[assoc_name]
+                    else:
+                        value = None
                 else:
                     value = self.__getitem__(self.associations[name], assoc_find=True)
                 if value:

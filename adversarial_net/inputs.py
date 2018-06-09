@@ -16,6 +16,8 @@ def getDatasetFilePath(datapath, dataset, modelname):
             return osp.join(datapath, "imdb_lm_dataset.pickle")
         elif modelname == "classification_model":
             return osp.join(datapath, "imdb_classification_dataset.pickle")
+        elif modelname == "autoencoder_model":
+            return osp.join(datapath, "imdb_ae_dataset.pickle")
 
 class DataLoader(object):
     def __init__(self, base_dir, dataset):
@@ -146,11 +148,11 @@ def construct_language_model_input_tensor_with_state(datapath, batch_size, unrol
         pool = SimpleInMemorySamplePool(X_y_samples, chunk_size=1)
 
         def get_single_example():
-            # ([1, 2 * seq_len], [1])
+            # (([seq_len], [seq_len]), [1])
             sample, indice = pool.__next__()
             x_sample = np.array(sample[0][0]).reshape(-1, 1)
             y_sample = np.array(sample[0][1]).reshape(-1, 1)
-            assert x_sample.shape[0] == y_sample.shape[0]
+            assert x_sample.shape[0] == y_sample.shape[0], "illegal shape"
             weights = np.ones((x_sample.shape[0], 1), dtype=np.float32)
             weights[-1][0] = 0  # eos tag has 0 weights
             indice = str(indice[0])
@@ -165,6 +167,34 @@ def construct_language_model_input_tensor_with_state(datapath, batch_size, unrol
         return indice_tensor, {"X": X_tensor, "y": y_tensor, "weight": weight_tensor}, {}, tf.shape(X_tensor)[0]
 
     return construct_input_tensor_with_state(args_fn, datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, "language_model", bidrec)
+
+def construct_autoencoder_model_input_tensor_with_state(datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False):
+    def args_fn(datapack):
+        X_train = datapack["X"]
+        y_train = datapack["y"]
+        weight_train = datapack["weight"]
+        X_y_w_samples = list(zip(X_train, y_train, weight_train))
+        pool = SimpleInMemorySamplePool(X_y_w_samples, chunk_size=1)
+
+        def get_single_example():
+            # (([2 * seq_len - 1, 1], [2 * seq_len - 1, 1], [2 * seq_len - 1, 1]), [1])
+            sample, indice = pool.__next__()
+            x_sample = sample[0][0]
+            y_sample = sample[0][1]
+            weights = sample[0][2]
+            assert x_sample.shape[0] == y_sample.shape[0] == weights.shape[0], "illegal shape"
+            indice = str(indice[0])
+            return x_sample, y_sample, weights, indice
+
+        X_tensor, y_tensor, weight_tensor, indice_tensor = tf.py_func(get_single_example, [],
+                                                                      [tf.int32, tf.int32, tf.float32, tf.string],
+                                                                      name="get_single_example")
+        X_tensor.set_shape([None, 1])
+        y_tensor.set_shape([None, 1])
+        weight_tensor.set_shape([None, 1])
+        return indice_tensor, {"X": X_tensor, "y": y_tensor, "weight": weight_tensor}, {}, tf.shape(X_tensor)[0]
+
+    return construct_input_tensor_with_state(args_fn, datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, "autoencoder_model", bidrec)
 
 def construct_classification_model_input_tensor_with_state(datapath, phase, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False):
     if phase == "train":
@@ -183,7 +213,7 @@ def construct_classification_model_input_tensor_with_state(datapath, phase, batc
         raise Exception("Unsupport phase %s" % phase)
     def args_fn(datapack):
         X_train = datapack[X_name]
-        y_train = datapack[y_name]
+        y_train = np.array(datapack[y_name], dtype=np.int64)
         weights = datapack[weight_name]
         X_y_w_samples = list(zip(X_train, y_train, weights))
         pool = SimpleInMemorySamplePool(X_y_w_samples, chunk_size=1)
@@ -191,13 +221,13 @@ def construct_classification_model_input_tensor_with_state(datapath, phase, batc
         def get_single_example():
             sample, indice = pool.__next__()
             x_sample = np.array(sample[0][0]).reshape(-1, 1)
-            y_sample = np.array(sample[0][1], dtype=np.int32)
+            y_sample = sample[0][1]
             weights_sample = np.array(sample[0][2], dtype=np.float32).reshape(-1, 1)
             indice = str(indice[0])
             return x_sample, y_sample, weights_sample, indice
 
         X_tensor, y_tensor, weight_tensor, indice_tensor = tf.py_func(get_single_example, [],
-                                                                      [tf.int32, tf.int32, tf.float32, tf.string],
+                                                                      [tf.int32, tf.int64, tf.float32, tf.string],
                                                                       name="get_single_example")
         X_tensor.set_shape([None, 1])
         y_tensor.set_shape([1])

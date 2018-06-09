@@ -3,6 +3,7 @@ sys.path.insert(0, ".")
 from adversarial_net.preprocessing import AutoPaddingInMemorySamplePool
 from adversarial_net.inputs import DataLoader, construct_data_queue, construct_language_model_input_tensors
 from adversarial_net.inputs import construct_classification_model_input_tensor_with_state
+from adversarial_net.inputs import construct_autoencoder_model_input_tensor_with_state
 from adversarial_net.inputs import construct_language_model_input_tensor_with_state
 from adversarial_net.utils import getLogger, ArgumentsBuilder
 import numpy as np
@@ -122,6 +123,25 @@ def test_construct_language_model_input_tensor_with_state():
         coodinator.request_stop()
         coodinator.join(threads)
 
+def test_construct_autoencoder_model_input_tensor_with_state():
+    batch, _, _ = construct_autoencoder_model_input_tensor_with_state(
+        "E:/kaggle/avito/imdb_testset/adversarial_net/data", batch_size=1, unroll_steps=200,
+        lstm_num_layers=1, state_size=10, dataset="imdb")
+    print(batch.key, batch.sequences["X"], batch.sequences["y"], batch.sequences["weight"], batch.state("0_lstm_c"), batch.length)
+    with tf.Session() as sess:
+        coodinator = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess, coodinator)
+        for i in range(5):
+            key, X, y, w = sess.run([batch.key, batch.sequences["X"], batch.sequences["y"], batch.sequences["weight"]])
+            lens = sess.run(batch.length)
+            print(key[0]),
+            print("X:", X[0].tolist())
+            print("y:", y[0].tolist())
+            print("w:", w[0].tolist())
+            print(lens)
+        coodinator.request_stop()
+        coodinator.join(threads)
+
 def test_construct_classification_model_input_tensor_with_state():
     batch, _, _ = construct_classification_model_input_tensor_with_state(
         "E:/kaggle/avito/imdb_testset/adversarial_net/data", phase="train", batch_size=1, unroll_steps=100,
@@ -153,5 +173,7 @@ if __name__ == "__main__":
         test_construct_language_model_input_tensor_with_state()
     elif FLAGS.test_module == "test_construct_classification_model_input_tensor_with_state":
         test_construct_classification_model_input_tensor_with_state()
+    elif FLAGS.test_module == "test_construct_autoencoder_model_input_tensor_with_state":
+        test_construct_autoencoder_model_input_tensor_with_state()
     else:
         logger.info("unknown testing module: %s" % FLAGS.test_module)

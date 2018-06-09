@@ -36,7 +36,7 @@ class ClassificationModelDenseHeader(object):
 
             if keep_prob < 1.:
                 self.dense_header.add(keras.layers.Dropout(1. - keep_prob))
-                self.dense_header.add(K.layers.Dense(num_classes))
+            self.dense_header.add(keras.layers.Dense(num_classes))
 
     def __call__(self, inputs):
         return self.dense_header(inputs)
