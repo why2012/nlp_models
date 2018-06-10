@@ -116,7 +116,7 @@ class SoftmaxLoss(keras.layers.Layer):
     def build(self, input_shape):
         input_shape = input_shape[0]
         self.lin_w = self.add_weight(
-          shape=(input_shape[-1], self.vocab_size),
+          shape=(self.vocab_size, input_shape[-1]),
           name='lm_lin_w',
           initializer=keras.initializers.glorot_uniform())
         self.lin_b = self.add_weight(
@@ -144,7 +144,7 @@ class SoftmaxLoss(keras.layers.Layer):
             inputs_reshaped = tf.reshape(x, [-1, int(x.get_shape()[2])])
 
             lm_loss = tf.nn.sampled_softmax_loss(
-              weights=tf.transpose(self.lin_w),
+              weights=self.lin_w,
               biases=self.lin_b,
               labels=labels_reshaped,
               inputs=inputs_reshaped,
@@ -152,7 +152,7 @@ class SoftmaxLoss(keras.layers.Layer):
               num_classes=self.vocab_size,
               sampled_values=sampled)
             lm_loss = tf.reshape(lm_loss, [int(x.get_shape()[0]), int(x.get_shape()[1])])
-            logits = tf.nn.bias_add(tf.matmul(inputs_reshaped, self.lin_w), self.lin_b)
+            logits = tf.nn.bias_add(tf.matmul(inputs_reshaped, tf.transpose(self.lin_w)), self.lin_b)
         else:
             logits = self.multiclass_dense_layer(x)
             lm_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
