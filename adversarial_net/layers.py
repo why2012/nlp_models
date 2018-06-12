@@ -161,7 +161,7 @@ class SoftmaxLoss(keras.layers.Layer):
             labels_reshaped = tf.reshape(labels, (-1, 1))
 
         self.lm_acc = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(logits, axis=-1), labels_reshaped), tf.float32))
-        lm_loss = tf.identity(tf.reduce_sum(lm_loss * weights) / _num_labels(weights), name='lm_xentropy_loss')
+        lm_loss = tf.identity(tf.reduce_sum(lm_loss * weights) / num_labels(weights), name='lm_xentropy_loss')
         return lm_loss
 
 class ClassificationSparseSoftmaxLoss(keras.layers.Layer):
@@ -174,15 +174,15 @@ class ClassificationSparseSoftmaxLoss(keras.layers.Layer):
     def call(self, inputs):
         logits, labels, weights = inputs
         loss = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels)
-        return tf.identity(tf.reduce_sum(weights * loss) / _num_labels(weights), name='classification_xentropy')
+        return tf.identity(tf.reduce_sum(weights * loss) / num_labels(weights), name='classification_xentropy')
 
 def accuracy(logits, labels, weights):
     eq = tf.cast(tf.equal(tf.argmax(logits, 1), labels), tf.float32)
-    acc = tf.identity(tf.reduce_sum(weights * eq) / _num_labels(weights), name='accuracy')
+    acc = tf.identity(tf.reduce_sum(weights * eq) / num_labels(weights), name='accuracy')
     return acc
 
-def _num_labels(weights):
+def num_labels(weights):
     """Number of 1's in weights. Returns 1. if 0."""
-    num_labels = tf.reduce_sum(weights)
-    num_labels = tf.where(tf.equal(num_labels, 0.), 1., num_labels)
-    return num_labels
+    _num_labels = tf.reduce_sum(weights)
+    _num_labels = tf.where(tf.equal(_num_labels, 0.), 1., _num_labels)
+    return _num_labels

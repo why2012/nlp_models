@@ -13,6 +13,7 @@ from adversarial_net.inputs import construct_autoencoder_model_input_tensor_with
 from adversarial_net import osp
 
 logger = getLogger("model")
+EOS_TAG = 2
 
 class LanguageModel(BaseModel):
     def __init__(self, use_average = False):
@@ -127,13 +128,14 @@ class AdversarialClassificationModel(BaseModel):
                                                                    sequence_len=self.inputs.length)
         # cl_loss ()
         # logits (None, n_classes)
-        self.cl_loss, logits = self.get_cl_loss(output_tensor, y_tensor, weight_tensor)
+        self.cl_loss, self.cl_logits = self.get_cl_loss(output_tensor, y_tensor, weight_tensor, self.laststep_gather_indices)
         tf.summary.scalar('classification_loss', self.cl_loss)
         # final_output_weights (None,)
         final_output_weights = tf.gather_nd(weight_tensor, self.laststep_gather_indices)
-        self.acc = layers.accuracy(logits, y_tensor, final_output_weights)
+        self.acc = layers.accuracy(self.cl_logits, y_tensor, final_output_weights)
         tf.summary.scalar('accuracy', self.acc)
-        self.adv_loss = self.get_adversarial_loss(y_tensor, weight_tensor)
+        with tf.name_scope("adversarial_loss"):
+            self.adv_loss = self.get_adversarial_loss(X_tensor, y_tensor, weight_tensor)
         tf.summary.scalar('adversarial_loss', self.adv_loss)
         self.loss = self.cl_loss + self.adv_loss * tf.constant(self.arguments["adv_cl_loss"]["adv_reg_coeff"], name='adv_reg_coeff')
         tf.summary.scalar('classification_loss + adversarial_loss', self.loss)
@@ -148,22 +150,22 @@ class AdversarialClassificationModel(BaseModel):
         super(AdversarialClassificationModel, self)._fit(model_inpus, save_model_path, pretrained_model_path,
                                         variables_to_restore=variables_to_restore)
 
-    def get_cl_loss(self, lstm_output_tensor, y_tensor, weight_tensor):
+    def get_cl_loss(self, lstm_output_tensor, y_tensor, weight_tensor, laststep_gather_indices):
         # final_output_tensor (None, lstm_size)
-        final_output_tensor = tf.gather_nd(lstm_output_tensor, self.laststep_gather_indices)
+        final_output_tensor = tf.gather_nd(lstm_output_tensor, laststep_gather_indices)
         # final_output_weights (None,)
-        final_output_weights = tf.gather_nd(weight_tensor, self.laststep_gather_indices)
+        final_output_weights = tf.gather_nd(weight_tensor, laststep_gather_indices)
         # logits (None, n_classes)
         logits = self.sequences["cl_dense"](final_output_tensor)
         # cl_loss ()
         cl_loss = self.loss_layer([logits, y_tensor, final_output_weights])
         return cl_loss, logits
 
-    def get_adversarial_loss(self, y_tensor, weight_tensor):
+    def get_adversarial_loss(self, X_tensor, y_tensor, weight_tensor):
         # embedding_grads (None, steps, embbed_size)
         embedding_grads = tf.gradients(self.cl_loss, self.sequences["lm_sequence"].embedding)[0]
         embedding_grads = tf.stop_gradient(embedding_grads)
-        # pertueb (None, steps, embbed_size)
+        # perturb (None, steps, embbed_size)
         perturb = self.embed_scale_l2(embedding_grads, self.arguments["adv_cl_loss"]["perturb_norm_length"])
         # lstm_initial_state  [LSTMTuple(c, h), ...]
         lstm_initial_state = self.get_lstm_state()
@@ -172,7 +174,7 @@ class AdversarialClassificationModel(BaseModel):
         perturbed_embedding = self.sequences["lm_sequence"].embedding + perturb
         # lstm_output_tensor (None, steps, lstm_size)
         lstm_output_tensor, _ = self.sequences["lm_sequence"].lstm_layer(perturbed_embedding, lstm_initial_state, sequence_len)
-        return self.get_cl_loss(lstm_output_tensor, y_tensor, weight_tensor)[0]
+        return self.get_cl_loss(lstm_output_tensor, y_tensor, weight_tensor, self.laststep_gather_indices)[0]
 
     def embed_scale_l2(self, x, norm_length):
         # shape(x) = (batch, num_timesteps, d)
@@ -185,6 +187,108 @@ class AdversarialClassificationModel(BaseModel):
         l2_norm = alpha * tf.sqrt(tf.reduce_sum(tf.pow(x / alpha, 2), (1, 2), keep_dims=True) + 1e-6)
         x_unit = x / l2_norm
         return norm_length * x_unit
+
+class VirtualAdversarialClassificationModel(AdversarialClassificationModel):
+    def __init__(self, use_average=False):
+        super(VirtualAdversarialClassificationModel, self).__init__(use_average=use_average)
+        logger.info("constructing virtual-adv classification model dataset...")
+        self.vir_adv_inputs, self.vir_adv_get_lstm_state, self.vir_adv_save_lstm_state = construct_classification_model_input_tensor_with_state(
+            **self.arguments["adv_cl_inputs"])
+        logger.info("virtual-adv classification model dataset is constructed.")
+
+    @property
+    def virtual_inputs(self):
+        # return self.inputs
+        return self.vir_adv_inputs
+
+    @property
+    def virtual_get_lstm_state(self):
+        # return self.get_lstm_state
+        return self.vir_adv_get_lstm_state
+
+    @property
+    def virtual_save_lstm_state(self):
+        # return self.save_lstm_state
+        return self.vir_adv_save_lstm_state
+
+    def logits_and_embedding(self, X_tensor, y_tensor, weight_tensor, laststep_gather_indices):
+        # return self.cl_logits, self.sequences["lm_sequence"].embedding
+        # [LSTMTuple(c, h), ...]
+        lstm_initial_state = self.virtual_get_lstm_state()
+        # output_tensor (None, steps, lstm_size)
+        # final_state (None, lstm_size)
+        (output_tensor, final_state), embedding = self.sequences["lm_sequence"](X_tensor, lstm_initial_state,
+                                                                                return_embedding=True,
+                                                                                sequence_len=self.virtual_inputs.length)
+        # logits (None, n_classes)
+        cl_loss, cl_logits = self.get_cl_loss(output_tensor, y_tensor, weight_tensor, laststep_gather_indices)
+        return cl_logits, embedding
+
+    def input_tensors(self, X_tensor, y_tensor, weight_tensor):
+        X_tensor, y_tensor, weight_tensor = tf.squeeze(self.virtual_inputs.sequences["X"], axis=-1), tf.squeeze(
+            self.virtual_inputs.context["y"], axis=-1), tf.squeeze(self.virtual_inputs.sequences["weight"], axis=-1)
+        return X_tensor, y_tensor, weight_tensor
+
+    def get_adversarial_loss(self, X_tensor, y_tensor, weight_tensor):
+        # cl_logits (None, n_classes)
+        # embedding (None, steps, embedding_dim)
+        X_tensor, y_tensor, weight_tensor = self.input_tensors(X_tensor, y_tensor, weight_tensor)
+        # laststep_gather_indices [(batch_index, step_index), ...]
+        laststep_gather_indices = tf.stack([tf.range(self.arguments["inputs"]["batch_size"]), self.virtual_inputs.length - 1], 1)
+        cl_logits, embedding = self.logits_and_embedding(X_tensor, y_tensor, weight_tensor, laststep_gather_indices)
+        assert cl_logits is not None and embedding is not None
+        embed = embedding
+        logits = tf.stop_gradient(cl_logits)
+        # eos_indicator (None, steps)
+        eos_indicator = tf.cast(tf.equal(X_tensor, EOS_TAG), tf.float32)
+        # final_output_weights (None,)
+        final_step_weights = tf.gather_nd(eos_indicator, laststep_gather_indices)
+        # Initialize perturbation with random noise.
+        # shape(embedded) = (batch_size, num_timesteps, embedding_dim)
+        d = tf.random_normal(shape=tf.shape(embed))
+        # lstm_initial_state  [LSTMTuple(c, h), ...]
+        lstm_initial_state = self.virtual_get_lstm_state()
+        # sequence_len (None,)
+        sequence_len = self.virtual_inputs.length
+        # Perform finite difference method and power iteration.
+        # See Eq.(8) in the paper http://arxiv.org/pdf/1507.00677.pdf,
+        # Adding small noise to input and taking gradient with respect to the noise
+        # corresponds to 1 power iteration.
+        for _ in range(self.arguments["vir_adv_loss"]["num_power_iteration"]):
+            d = self.embed_scale_l2(self.mask_by_length(d, self.virtual_inputs.length), self.arguments["vir_adv_loss"]["small_constant_for_finite_diff"])
+            lstm_output_tensor, _ = self.sequences["lm_sequence"].lstm_layer(embed + d, lstm_initial_state, sequence_len)
+            d_logits = self.get_cl_loss(lstm_output_tensor, y_tensor, weight_tensor, laststep_gather_indices)[1]
+            kl_loss = self.kl_divergence_with_logits(logits, d_logits, final_step_weights)
+            d = tf.gradients(kl_loss, d)[0]
+            d = tf.stop_gradient(d)
+        # perturb (None, steps, embbed_size)
+        perturb = self.embed_scale_l2(d, self.arguments["adv_cl_loss"]["perturb_norm_length"])
+        lstm_output_tensor, final_states = self.sequences["lm_sequence"].lstm_layer(embed + perturb, lstm_initial_state, sequence_len)
+        perturbed_logits = self.get_cl_loss(lstm_output_tensor, y_tensor, weight_tensor, laststep_gather_indices)[1]
+        vir_loss = self.kl_divergence_with_logits(logits, perturbed_logits, final_step_weights)
+        with tf.control_dependencies([self.virtual_save_lstm_state(final_states)]):
+            vir_loss = tf.identity(vir_loss)
+        return vir_loss
+
+    def mask_by_length(self, embed, seq_length):
+        embed_steps = embed.get_shape().as_list()[1]
+        # Subtract 1 from length to prevent the perturbation from going on 'eos'
+        mask = tf.sequence_mask(seq_length - 1, maxlen=embed_steps)
+        mask = tf.expand_dims(tf.cast(mask, tf.float32), -1)
+        # shape(mask) = (batch, num_timesteps, 1)
+        return embed * mask
+
+    def kl_divergence_with_logits(self, q_logits, p_logits, weights):
+        # kl = sigma(q * (logq - logp))
+        # q (None, n_classes)
+        q = tf.nn.softmax(q_logits)
+        # kl (None, )
+        kl = tf.reduce_sum(q * (tf.nn.log_softmax(q_logits) - tf.nn.log_softmax(p_logits)), -1)
+        num_labels = layers.num_labels(weights)
+        loss = tf.identity(tf.reduce_sum(weights * kl) / num_labels, name='kl')
+        return loss
+
+
 
 
 

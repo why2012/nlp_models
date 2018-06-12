@@ -46,6 +46,9 @@ def configure():
     flags.add_argument(scope="adv_cl_loss", name="adv_reg_coeff", argtype=float, default=1.0)
     flags.add_argument(scope="adv_cl_loss", name="perturb_norm_length", argtype=float, default=5.0)
 
+    flags.add_argument(scope="vir_adv_loss", name="num_power_iteration", argtype=int, default=1)
+    flags.add_argument(scope="vir_adv_loss", name="small_constant_for_finite_diff", argtype=float, default=1e-1)
+
     flags.add_argument(name="phase", argtype=str, default="train")
     flags.add_argument(name="max_grad_norm", argtype=float, default=1.0)
     flags.add_argument(name="lr", argtype=float, default=1e-3)
@@ -73,6 +76,7 @@ class BaseModel(object):
         self.debug_tensors = {}
         self.debug_trace = self.arguments["tf_debug_trace"]
         self.timeline_dir = self.arguments["tf_timeline_dir"]
+        self.model_name = self.__class__.__name__
 
     def build(self):
         self.built = True
@@ -194,7 +198,7 @@ class BaseModel(object):
             if self.timeline_dir:
                 fetched_timeline = timeline.Timeline(run_metadata.step_stats)
                 chrome_trace = fetched_timeline.generate_chrome_trace_format()
-                with open(osp.join(self.timeline_dir, 'timeline_step_%d.json' % global_step_val), 'w') as f:
+                with open(osp.join(self.timeline_dir, '%s_timeline_step_%d.json' % (self.model_name, global_step_val)), 'w') as f:
                     f.write(chrome_trace)
         summary_writer.add_summary(summary, global_step_val)
 
@@ -202,7 +206,7 @@ class BaseModel(object):
         if global_step_val % self.arguments["eval_steps"] == 0:
             if not self.arguments["eval_acc"]:
                 logger.info("loss at step-%s/%s: %s, duration: %s" % (global_step_val, max_steps, loss_val, duration))
-            elif acc is not None and self.arguments["eval_acc"]:
+            elif acc_val > 0 and self.arguments["eval_acc"]:
                 logger.info(
                     "loss at step-%s/%s: %s, acc: %s, duration: %s" % (
                     global_step_val, max_steps, loss_val, acc_val, duration))

@@ -17,9 +17,13 @@ class LanguageModelSequence(object):
         self.embedding = None
 
     # output, final_state(LSTMTuple, ...)
-    def __call__(self, inputs, lstm_initial_state, sequence_len = None):
-        self.embedding = self.embedding_layer(inputs)
-        return self.lstm_layer(self.embedding, lstm_initial_state, sequence_len)
+    def __call__(self, inputs, lstm_initial_state, sequence_len = None, return_embedding = False):
+        if return_embedding:
+            embedding = self.embedding_layer(inputs)
+            return self.lstm_layer(embedding, lstm_initial_state, sequence_len), embedding
+        else:
+            self.embedding = self.embedding_layer(inputs)
+            return self.lstm_layer(self.embedding, lstm_initial_state, sequence_len)
 
     @property
     def trainable_weights(self):
