@@ -5,6 +5,9 @@ from __future__ import print_function
 import tensorflow as tf
 from tensorflow import keras
 import numpy as np
+from adversarial_net.utils import getLogger
+
+logger = getLogger("layer")
 
 class Embedding(keras.layers.Layer):
     """Embedding layer with frequency-based normalization and dropout."""
@@ -70,6 +73,7 @@ class LSTM(keras.layers.Layer):
         self.num_layers = num_layers
         self.keep_prob = keep_prob
         self.reuse = None
+        self.cell = None
 
     def build(self, input_shape):
         super(LSTM, self).build(input_shape)
@@ -83,6 +87,7 @@ class LSTM(keras.layers.Layer):
                   reuse=tf.get_variable_scope().reuse)
               for _ in range(self.num_layers)
             ])
+            self.cell = cell
 
             # shape(x) = (batch_size, num_timesteps, embedding_dim)
             lstm_out, next_state = tf.nn.dynamic_rnn(cell, x, initial_state=initial_state, sequence_length=seq_length)
@@ -110,7 +115,6 @@ class SoftmaxLoss(keras.layers.Layer):
         self.vocab_size = vocab_size
         self.num_candidate_samples = num_candidate_samples
         self.vocab_freqs = vocab_freqs
-        self.multiclass_dense_layer = keras.layers.Dense(self.vocab_size)
         self.lm_acc = None
 
     def build(self, input_shape):
@@ -123,46 +127,86 @@ class SoftmaxLoss(keras.layers.Layer):
           shape=(self.vocab_size,),
           name='lm_lin_b',
           initializer=keras.initializers.glorot_uniform())
-        self.multiclass_dense_layer.build(input_shape)
 
         super(SoftmaxLoss, self).build(input_shape)
 
     def call(self, inputs):
         x, labels, weights = inputs
-        if self.num_candidate_samples > -1:
-            assert self.vocab_freqs is not None
-            labels = tf.cast(labels, tf.int64)
-            labels_reshaped = tf.reshape(labels, [-1])
-            labels_reshaped = tf.expand_dims(labels_reshaped, -1)
-            sampled = tf.nn.fixed_unigram_candidate_sampler(
-              true_classes=labels_reshaped,
-              num_true=1,
-              num_sampled=self.num_candidate_samples,
-              unique=True,
-              range_max=self.vocab_size,
-              unigrams=self.vocab_freqs)
-            inputs_reshaped = tf.reshape(x, [-1, int(x.get_shape()[2])])
+        assert self.num_candidate_samples > -1, "self.num_candidate_samples must > -1"
+        assert self.vocab_freqs is not None
+        labels = tf.cast(labels, tf.int64)
+        labels_reshaped = tf.reshape(labels, [-1])
+        labels_reshaped = tf.expand_dims(labels_reshaped, -1)
+        sampled = tf.nn.fixed_unigram_candidate_sampler(
+          true_classes=labels_reshaped,
+          num_true=1,
+          num_sampled=self.num_candidate_samples,
+          unique=True,
+          range_max=self.vocab_size,
+          unigrams=self.vocab_freqs)
+        inputs_reshaped = tf.reshape(x, [-1, int(x.get_shape()[2])])
 
-            lm_loss = tf.nn.sampled_softmax_loss(
-              weights=self.lin_w,
-              biases=self.lin_b,
-              labels=labels_reshaped,
-              inputs=inputs_reshaped,
-              num_sampled=self.num_candidate_samples,
-              num_classes=self.vocab_size,
-              sampled_values=sampled)
-            lm_loss = tf.reshape(lm_loss, [int(x.get_shape()[0]), int(x.get_shape()[1])])
-            logits = tf.nn.bias_add(tf.matmul(inputs_reshaped, tf.transpose(self.lin_w)), self.lin_b)
-        else:
-            logits = self.multiclass_dense_layer(x)
-            lm_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(
-              logits=logits, labels=labels)
-            logits = tf.reshape(logits, (-1, int(logits.get_shape()[-1])))
-            labels_reshaped = tf.reshape(labels, (-1, 1))
+        lm_loss = tf.nn.sampled_softmax_loss(
+          weights=self.lin_w,
+          biases=self.lin_b,
+          labels=labels_reshaped,
+          inputs=inputs_reshaped,
+          num_sampled=self.num_candidate_samples,
+          num_classes=self.vocab_size,
+          sampled_values=sampled)
+        lm_loss = tf.reshape(lm_loss, [int(x.get_shape()[0]), int(x.get_shape()[1])])
+        logits = tf.nn.bias_add(tf.matmul(inputs_reshaped, tf.transpose(self.lin_w)), self.lin_b)
 
         self.lm_acc = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(logits, axis=-1), labels_reshaped), tf.float32))
         lm_loss = tf.identity(tf.reduce_sum(lm_loss * weights) / num_labels(weights), name='lm_xentropy_loss')
         return lm_loss
+
+class RnnOutputToEmbedding(keras.layers.Layer):
+    # rnn_output (batch_size, seq_length, rnn_size) -> (batch_size * seq_length, rnn_size) -> (~, vocab_size) ->
+    # sparse((~, vocab_size)) * embedding -> (~, embed_size) -> (batch_size, seq_length, embed_size)
+    def __init__(self, vocab_size, embedding_weights, var_w = None, var_b = None, sampler = None, **kwargs):
+        super(RnnOutputToEmbedding, self).__init__(**kwargs)
+        self.vocab_size = vocab_size
+        # embedding_weights (vocab_size, embed_size)
+        self.embedding_weights = embedding_weights
+        # var_w (vocab_size, rnn_size)
+        self.var_w = var_w
+        # var_b (vocab_size)
+        self.var_b = var_b
+        # sampling logit
+        self.sampler = sampler
+
+    def build(self, input_shape):
+        if self.var_w is None:
+            self.var_w = self.add_weight(
+                shape=(self.vocab_size, input_shape[-1]),
+                name='var_w',
+                initializer=keras.initializers.glorot_uniform())
+        if self.var_b is None:
+            self.var_b = self.add_weight(
+                shape=(self.vocab_size,),
+                name='var_b',
+                initializer=keras.initializers.glorot_uniform())
+        super(RnnOutputToEmbedding, self).build(input_shape)
+
+    def call(self, rnn_outputs):
+        batch_size, seq_length, rnn_size = tf.shape(rnn_outputs)
+        # rnn_output (batch_size * seq_length, rnn_size)
+        rnn_outputs = tf.reshape(rnn_outputs, (-1, rnn_size))
+        # vocab_logits (batch_size * seq_length, vocab_size)
+        vocab_logits = tf.matmul(rnn_outputs, self.var_w, transpose_b=True)
+        if self.sampler:
+            vocab_logits = self.sampler(vocab_logits)
+        maximum_indices = tf.argmax(vocab_logits, -1)
+        indices = tf.stack([tf.range(batch_size), maximum_indices], 1)
+        values = tf.gather_nd(vocab_logits, indices)
+        # sparse_vocab_logits sparse(batch_size * seq_length, vocab_size)
+        sparse_vocab_logits = tf.SparseTensor(indices, values, tf.shape(vocab_logits))
+        # embedding (batch_size * seq_length, embed_size)
+        embedding = tf.sparse_tensor_dense_matmul(sparse_vocab_logits, self.embedding_weights)
+        # embedding (batch_size, seq_length, embed_size)
+        embedding = tf.reshape(embedding, (batch_size, seq_length, rnn_size))
+        return embedding
 
 class ClassificationSparseSoftmaxLoss(keras.layers.Layer):
     def __init__(self, **kwargs):

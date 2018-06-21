@@ -7,6 +7,7 @@ import time
 from adversarial_net import arguments as flags
 from adversarial_net.utils import getLogger
 from adversarial_net import osp
+from collections import defaultdict
 
 logger = getLogger("model")
 def configure():
@@ -64,7 +65,19 @@ def configure():
     flags.add_argument(name="tf_timeline_dir", argtype=str, default=None)
 configure()
 
+class VariableManager(object):
+    def __init__(self):
+        self.collections = defaultdict(list)
+
+    def add_to_collection(self, name, value):
+        self.collections[name].append(value)
+
+    def get_collection(self, name):
+        return self.collections[name]
+
 class BaseModel(object):
+    CLIP_GRADS_SCOPE = "clip_grads_scope"
+
     def __init__(self, use_average = False):
         self.arguments = flags
         self.sequences = {}
@@ -77,6 +90,7 @@ class BaseModel(object):
         self.debug_trace = self.arguments["tf_debug_trace"]
         self.timeline_dir = self.arguments["tf_timeline_dir"]
         self.model_name = self.__class__.__name__
+        self.var_manager = VariableManager()
 
     def build(self):
         self.built = True
@@ -102,46 +116,57 @@ class BaseModel(object):
         else:
             return _trainable_weights
 
-    def optimize(self, loss, max_grad_norm, lr, lr_decay):
-        with tf.name_scope('optimization'):
-            # Compute gradients.
-            tvars = tf.trainable_variables()
-            grads = tf.gradients(loss, tvars)
+    def _get_and_clip_grads_by_variables(self, loss, variables, max_grad_norm):
+        grads = tf.gradients(loss, variables)
+        clipped_grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
+        clipped_grads_and_vars = list(zip(clipped_grads, variables))
+        return clipped_grads_and_vars
 
-            # Clip non-embedding grads
-            non_embedding_grads_and_vars = [(g, v) for (g, v) in zip(grads, tvars)
-                                            if 'embedding' not in v.op.name]
-            embedding_grads_and_vars = [(g, v) for (g, v) in zip(grads, tvars)
-                                        if 'embedding' in v.op.name]
+    def _trainable_variables_filter(self, filter_func, vars_list = None):
+        return list(filter(filter_func, tf.trainable_variables() if vars_list is None else vars_list))
 
-            ne_grads, ne_vars = zip(*non_embedding_grads_and_vars)
-            ne_grads, _ = tf.clip_by_global_norm(ne_grads, max_grad_norm)
-            non_embedding_grads_and_vars = list(zip(ne_grads, ne_vars))
+    def _trainable_variables_filter_and_grads(self, loss, filter_func, vars_list = None):
+        tvars = list(filter(filter_func, tf.trainable_variables() if vars_list is None else vars_list))
+        grads = tf.gradients(loss, tvars)
+        return list(zip(grads, tvars))
 
-            grads_and_vars = embedding_grads_and_vars + non_embedding_grads_and_vars
+    def _get_train_op_with_lr_decay(self, grads_and_vars, global_step, lr=None, lr_decay=None, staircase=True,
+                                    decay_step=1, optimizer=tf.train.AdamOptimizer):
+        lr = self.arguments["lr"] if lr is None else lr
+        lr_decay = self.arguments["lr_decay"] if lr_decay is None else lr_decay
+        lr = tf.train.exponential_decay(lr, global_step, decay_step, lr_decay, staircase=staircase)
+        opt = optimizer(lr)
+        apply_gradient_op = opt.apply_gradients(grads_and_vars, global_step=global_step)
+        return apply_gradient_op, lr
 
-            # Decaying learning rate
-            lr = tf.train.exponential_decay(lr, self.global_step, 1, lr_decay, staircase=True)
-            tf.summary.scalar('learning_rate', lr)
-            tf.summary.scalar('loss', loss)
-            opt = tf.train.AdamOptimizer(lr)
-            if self.use_average:
-                self.variable_averages = tf.train.ExponentialMovingAverage(0.999, global_step)
-            apply_gradient_op = opt.apply_gradients(grads_and_vars, global_step=self.global_step)
-            if self.use_average:
-                with tf.control_dependencies([apply_gradient_op]):
-                    train_op = self.variable_averages.apply(tvars)
-            else:
-                train_op = apply_gradient_op
+    def _moving_average_wrapper(self, train_op, tvars, global_step, decay = 0.999):
+        variable_averages = tf.train.ExponentialMovingAverage(decay, global_step)
+        with tf.control_dependencies([train_op]):
+            train_op = variable_averages.apply(tvars)
         return train_op
 
-    def maybe_restore_pretrained_model(self, sess, saver_for_restore, model_dir, train_dir):
+    def optimize(self, loss, max_grad_norm, lr, lr_decay):
+        with tf.name_scope('optimization'):
+            embedding_grads_and_vars = self._trainable_variables_filter_and_grads(loss, lambda v: "embedding" in v.op.name)
+            non_embedding_grads_and_vars = self._get_and_clip_grads_by_variables(loss, self._trainable_variables_filter(
+                lambda v: "embedding" not in v.op.name), max_grad_norm)
+            grads_and_vars = embedding_grads_and_vars + non_embedding_grads_and_vars
+            # Decaying learning rate
+            train_op, lr = self._get_train_op_with_lr_decay(grads_and_vars, self.global_step, lr=lr, lr_decay=lr_decay)
+            tf.summary.scalar('learning_rate', lr)
+            tf.summary.scalar('loss', loss)
+            if self.use_average:
+                train_op = self._moving_average_wrapper(train_op, tf.trainable_variables(), self.global_step)
+        return train_op
+
+    def _maybe_restore_pretrained_model(self, sess, saver_for_restore, model_dir, train_dir):
         """Restores pretrained model if there is no ckpt model."""
-        ckpt = tf.train.get_checkpoint_state(train_dir)
-        checkpoint_exists = ckpt and ckpt.model_checkpoint_path
-        if checkpoint_exists:
-            logger.info('Checkpoint exists in train_dir; skipping pretraining restore')
-            return
+        if train_dir:
+            ckpt = tf.train.get_checkpoint_state(train_dir)
+            checkpoint_exists = ckpt and ckpt.model_checkpoint_path
+            if checkpoint_exists:
+                logger.info('Checkpoint exists in train_dir; skipping pretraining restore')
+                return
         pretrain_ckpt = tf.train.get_checkpoint_state(model_dir)
         if not (pretrain_ckpt and pretrain_ckpt.model_checkpoint_path):
             logger.info('Asked to restore pretrained sub model from %s but no checkpoint found.' % model_dir)
@@ -149,20 +174,22 @@ class BaseModel(object):
         logger.info('restore pretrained variables from: %s' % pretrain_ckpt.model_checkpoint_path)
         saver_for_restore.restore(sess, pretrain_ckpt.model_checkpoint_path)
 
-    def _restore_pretained_variables(self, sess, pretrained_model_path, save_model_path, variables_to_restore):
+    def _restore_pretained_variables(self, sess, pretrained_model_path, variables_to_restore, save_model_path = None, saver_for_restore = None):
         if pretrained_model_path:
             assert variables_to_restore
             logger.info('Will attempt restore from %s: %s', pretrained_model_path, variables_to_restore)
-            saver_for_restore = tf.train.Saver(variables_to_restore)
-            self.maybe_restore_pretrained_model(sess, saver_for_restore, osp.dirname(pretrained_model_path), osp.dirname(save_model_path))
+            if saver_for_restore is None:
+                saver_for_restore = tf.train.Saver(variables_to_restore)
+            self._maybe_restore_pretrained_model(sess, saver_for_restore, osp.dirname(pretrained_model_path), osp.dirname(save_model_path))
 
-    def _resotre_training_model(self, sess, save_model_path):
+    def _resotre_training_model(self, sess, save_model_path, saver_for_model_restore = None):
         if self.arguments["should_restore_if_could"] and save_model_path is not None:
             model_ckpt = tf.train.get_checkpoint_state(osp.dirname(save_model_path))
             model_checkpoint_exists = model_ckpt and model_ckpt.model_checkpoint_path
             if model_checkpoint_exists:
                 logger.info("resotre model from %s" % model_ckpt.model_checkpoint_path)
-                saver_for_model_restore = tf.train.Saver()
+                if saver_for_model_restore is None:
+                    saver_for_model_restore = tf.train.Saver()
                 saver_for_model_restore.restore(sess, model_ckpt.model_checkpoint_path)
 
     def _pretrain_step(self, global_step_val):
@@ -172,7 +199,7 @@ class BaseModel(object):
             run_metadata = tf.RunMetadata()
         return run_options, run_metadata
 
-    def _train_step(self, sess, ops, acc, feed_dict = None, run_options = None, run_metadata = None):
+    def _train_step(self, sess, ops, acc = None, feed_dict = None, run_options = None, run_metadata = None):
         # training phase
         if acc is not None and self.arguments["eval_acc"]:
             ops.append(acc)
@@ -202,7 +229,7 @@ class BaseModel(object):
                     f.write(chrome_trace)
         summary_writer.add_summary(summary, global_step_val)
 
-    def _eval_step(self, global_step_val, max_steps, loss_val, acc_val, duration):
+    def _eval_step(self, global_step_val, max_steps, loss_val, acc_val = -1, duration = -1):
         if global_step_val % self.arguments["eval_steps"] == 0:
             if not self.arguments["eval_acc"]:
                 logger.info("loss at step-%s/%s: %s, duration: %s" % (global_step_val, max_steps, loss_val, duration))
