@@ -50,8 +50,8 @@ class LanguageSequenceGeneratorLSTM(object):
 
     @property
     def pretrain_weights(self):
-        return [dict(zip(map(lambda x: x.op.name.split("/", 1)[1], self.lm_lstm_layer.trainable_weights), self.lm_lstm_layer.trainable_weights)),
-                dict(zip(map(lambda x: x.op.name.split("/", 1)[1], self.ae_lstm_layer.trainable_weights), self.ae_lstm_layer.trainable_weights))]
+        return [{x.op.name.split("/", 1)[1]: x for x in self.lm_lstm_layer.trainable_weights},
+                {x.op.name.split("/", 1)[1]: x for x in self.ae_lstm_layer.trainable_weights}]
 
     @property
     def pretrain_restorer(self):
