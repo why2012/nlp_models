@@ -37,12 +37,153 @@ class LanguageModelSequence(object):
     def pretrain_restorer(self):
         return []
 
+class EmbeddingSequence(object):
+    def __init__(self, vocab_size, embedding_dim, vocab_freqs, normalize=True, keep_embed_prob=1):
+        self.embedding_layer = layers.Embedding(vocab_size=vocab_size, embedding_dim=embedding_dim,
+                                                vocab_freqs=vocab_freqs,
+                                                keep_prob=keep_embed_prob, normalize=normalize)
+        self.embedding_layer.build([-1, -1])
+
+    def __call__(self, inputs):
+        # inputs (batch_size, time_steps)
+        # embedding (batch_size, time_steps, embed_size)
+        embedding = self.embedding_layer(inputs)
+        return embedding
+
+    @property
+    def trainable_weights(self):
+        return self.embedding_layer.trainable_weights
+
+    @property
+    def pretrain_weights(self):
+        return [{x.op.name.split("/", 1)[1]: x for x in self.embedding_layer.trainable_weights}]
+
+    @property
+    def pretrain_restorer(self):
+        restorers = []
+        for pretrain_name_vars in self.pretrain_weights:
+            restorers.append(tf.train.Saver(pretrain_name_vars))
+        return restorers
+
+# use this sequence as sub-net of real-fake-discriminator and topic-discriminator
+class Seq2SeqSequence(object):
+    def __init__(self, var_scope_name, rnn_cell_size, input_size, rnn_num_layers=1, lstm_keep_pro_out=1):
+        with tf.variable_scope(var_scope_name):
+            self.lstm_layer = layers.LSTM(cell_size=rnn_cell_size, num_layers=rnn_num_layers, keep_prob=lstm_keep_pro_out)
+            self.lstm_layer.build(input_shape=[-1, input_size])
+
+    def __call__(self, embedding, lstm_initial_state, sequence_len = None):
+        # embedding (batch_size, time_steps, embed_size)
+        # outputs (batch_size, time_steps, rnn_size)
+        # final_states (batch_size, rnn_size)
+        outputs, final_states = self.lstm_layer(embedding, lstm_initial_state, sequence_len)
+        return outputs, final_states
+
+    @property
+    def trainable_weights(self):
+        return self.lstm_layer.trainable_weights
+
+    @property
+    def pretrain_weights(self):
+        return [{x.op.name.split("/", 1)[1]: x for x in self.lstm_layer.trainable_weights}]
+
+    @property
+    def pretrain_restorer(self):
+        restorers = []
+        for pretrain_name_vars in self.pretrain_weights:
+            restorers.append(tf.train.Saver(pretrain_name_vars))
+        return restorers
+
+class AdversarialLoss(object):
+    def __init__(self, perturb_norm_length):
+        self.perturb_norm_length = perturb_norm_length
+
+    def __call__(self, loss, compute_loss_fn, target):
+        target_grads = tf.gradients(loss, target)[0]
+        target_grads = tf.stop_gradient(target_grads)
+        perturb = self.embed_scale_l2(target_grads, self.perturb_norm_length)
+        return compute_loss_fn(target + perturb)
+
+    def embed_scale_l2(self, x, norm_length):
+        # alpha (None, 1, 1)
+        alpha = tf.reduce_max(tf.abs(x), (1, 2), keep_dims=True) + 1e-12
+        # l2_norm (None, 1, 1)
+        l2_norm = alpha * tf.sqrt(tf.reduce_sum(tf.pow(x / alpha, 2), (1, 2), keep_dims=True) + 1e-6)
+        x_unit = x / l2_norm
+        return norm_length * x_unit
+
+    @property
+    def pretrain_weights(self):
+        return []
+
+    @property
+    def pretrain_restorer(self):
+        return []
+
+class VirtualAdversarialLoss(AdversarialLoss):
+    def __init__(self, perturb_norm_length, small_constant_for_finite_diff, eos_tag, iter_count):
+        self.perturb_norm_length = perturb_norm_length
+        self.small_constant_for_finite_diff = small_constant_for_finite_diff
+        self.eos_tag = eos_tag
+        self.iter_count = iter_count
+
+    def __call__(self, compute_logits_fn, logits, target, X_tensor, sequence_length):
+        batch_size_tensor = tf.shape(target)[0]
+        logits = tf.stop_gradient(logits)
+        laststep_gather_indices = tf.stack([tf.range(batch_size_tensor), sequence_length - 1], 1)
+        # eos_indicator (None, steps)
+        eos_indicator = tf.cast(tf.equal(X_tensor, self.eos_tag), tf.float32)
+        # final_output_weights (None,)
+        final_step_weights = tf.gather_nd(eos_indicator, laststep_gather_indices)
+        # shape(embedded) = (batch_size, num_timesteps, embedding_dim)
+        d = tf.random_normal(shape=tf.shape(target))
+        for _ in range(self.iter_count):
+            d = self.embed_scale_l2(self.mask_by_length(d, sequence_length), self.small_constant_for_finite_diff)
+            d_logits = compute_logits_fn(target + d)
+            kl_loss = self.kl_divergence_with_logits(logits, d_logits, final_step_weights)
+            d = tf.gradients(kl_loss, d)[0]
+            d = tf.stop_gradient(d)
+        perturb = self.embed_scale_l2(d, self.perturb_norm_length)
+        perturbed_logits = compute_logits_fn(target + perturb)
+        virtual_loss = self.kl_divergence_with_logits(logits, perturbed_logits, final_step_weights)
+        return virtual_loss
+
+    def mask_by_length(self, embed, seq_length):
+        embed_steps = embed.get_shape().as_list()[1]
+        # Subtract 1 from length to prevent the perturbation from going on 'eos'
+        mask = tf.sequence_mask(seq_length - 1, maxlen=embed_steps)
+        # mask (batch, num_timesteps, 1)
+        mask = tf.expand_dims(tf.cast(mask, tf.float32), -1)
+        return embed * mask
+
+    # compute kl loss, and filter out non_final_seq loss
+    def kl_divergence_with_logits(self, q_logits, p_logits, weights):
+        # kl = sigma(q * (logq - logp))
+        # q (None, n_classes)
+        q = tf.nn.softmax(q_logits)
+        # kl (None, )
+        kl = tf.reduce_sum(q * (tf.nn.log_softmax(q_logits) - tf.nn.log_softmax(p_logits)), -1)
+        num_labels = tf.reduce_sum(weights)
+        num_labels = tf.where(tf.equal(num_labels, 0.), 1., _num_labels)
+        loss = tf.identity(tf.reduce_sum(weights * kl) / num_labels, name='kl_loss')
+        return loss
+
+    @property
+    def pretrain_weights(self):
+        return []
+
+    @property
+    def pretrain_restorer(self):
+        return []
+
 class LanguageSequenceGeneratorLSTM(object):
-    def __init__(self, rnn_cell_size, rnn_num_layers=1, lstm_keep_pro_out=1):
+    def __init__(self, rnn_cell_size, input_size, rnn_num_layers=1, lstm_keep_pro_out=1):
         with tf.variable_scope("lm_lstm_layer"):
             self.lm_lstm_layer = layers.LSTM(cell_size=rnn_cell_size, num_layers=rnn_num_layers, keep_prob=lstm_keep_pro_out)
+            self.lm_lstm_layer.build(input_shape=[-1, input_size])
         with tf.variable_scope("ae_lstm_layer"):
             self.ae_lstm_layer = layers.LSTM(cell_size=rnn_cell_size, num_layers=rnn_num_layers, keep_prob=lstm_keep_pro_out)
+            self.ae_lstm_layer.build(input_shape=[-1, input_size])
 
     @property
     def trainable_weights(self):
@@ -52,6 +193,28 @@ class LanguageSequenceGeneratorLSTM(object):
     def pretrain_weights(self):
         return [{x.op.name.split("/", 1)[1]: x for x in self.lm_lstm_layer.trainable_weights},
                 {x.op.name.split("/", 1)[1]: x for x in self.ae_lstm_layer.trainable_weights}]
+
+    @property
+    def pretrain_restorer(self):
+        restorers = []
+        for pretrain_name_vars in self.pretrain_weights:
+            restorers.append(tf.train.Saver(pretrain_name_vars))
+        return restorers
+
+class RnnOutputToEmbedding(object):
+    def __init__(self, var_scope_name, vocab_size, input_size, embedding_weights, sampler=None):
+        with tf.variable_scope(var_scope_name):
+            self.softmax_loss = layers.SoftmaxLoss(vocab_size=vocab_size)
+            self.softmax_loss.build([-1, input_size])
+            self.toEmbedding = layers.RnnOutputToEmbedding(vocab_size, embedding_weights, self.softmax_loss.lin_w, self.softmax_loss.lin_b, sampler)
+            self.toEmbedding.build(input_shape=[-1, input_size])
+
+    def __call__(self, inputs):
+        return self.toEmbedding(inputs)
+
+    @property
+    def pretrain_weights(self):
+        return [{x.op.name.split("/", 1)[1]: x for x in self.softmax_loss.trainable_weights}]
 
     @property
     def pretrain_restorer(self):
@@ -215,17 +378,23 @@ class LanguageSequenceGenerator(object):
         return []
 
 class ClassificationModelDenseHeader(object):
-    def __init__(self, layer_sizes, input_size, num_classes, keep_prob=1.):
-        self.dense_header = keras.models.Sequential(name='cl_logits')
-        for i, layer_size in enumerate(layer_sizes):
-            if i == 0:
-                self.dense_header.add(keras.layers.Dense(layer_size, activation='relu', input_dim=input_size))
-            else:
-                self.dense_header.add(keras.layers.Dense(layer_size, activation='relu'))
+    def __init__(self, layer_sizes, input_size, num_classes, keep_prob=1., var_scope_name = None):
+        def build():
+            self.dense_header = keras.models.Sequential(name='cl_logits')
+            for i, layer_size in enumerate(layer_sizes):
+                if i == 0:
+                    self.dense_header.add(keras.layers.Dense(layer_size, activation='relu', input_dim=input_size))
+                else:
+                    self.dense_header.add(keras.layers.Dense(layer_size, activation='relu'))
 
-            if keep_prob < 1.:
-                self.dense_header.add(keras.layers.Dropout(1. - keep_prob))
-            self.dense_header.add(keras.layers.Dense(num_classes))
+                if keep_prob < 1.:
+                    self.dense_header.add(keras.layers.Dropout(1. - keep_prob))
+                self.dense_header.add(keras.layers.Dense(num_classes))
+        if var_scope_name is None:
+            build()
+        else:
+            with tf.variable_scope(var_scope_name):
+                build()
 
     def __call__(self, inputs):
         return self.dense_header(inputs)
@@ -236,9 +405,12 @@ class ClassificationModelDenseHeader(object):
 
     @property
     def pretrain_weights(self):
-        return [dict(zip(map(lambda x: x.op.name, self.trainable_weights), self.trainable_weights))]
+        return [{x.op.name.split("/", 1)[1]: x for x in self.dense_header.trainable_weights}]
 
     @property
     def pretrain_restorer(self):
-        return []
+        restorers = []
+        for pretrain_name_vars in self.pretrain_weights:
+            restorers.append(tf.train.Saver(pretrain_name_vars))
+        return restorers
 

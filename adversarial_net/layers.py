@@ -77,8 +77,6 @@ class LSTM(keras.layers.Layer):
 
     def build(self, input_shape):
         super(LSTM, self).build(input_shape)
-
-    def __call__(self, x, initial_state, seq_length = None):
         with tf.variable_scope(self.name, reuse=self.reuse) as vs:
             cell = tf.contrib.rnn.MultiRNNCell([
               tf.contrib.rnn.BasicLSTMCell(
@@ -87,20 +85,18 @@ class LSTM(keras.layers.Layer):
                   reuse=tf.get_variable_scope().reuse)
               for _ in range(self.num_layers)
             ])
+            cell.build(input_shape)
             self.cell = cell
-
-            # shape(x) = (batch_size, num_timesteps, embedding_dim)
-            lstm_out, next_state = tf.nn.dynamic_rnn(cell, x, initial_state=initial_state, sequence_length=seq_length)
-            # shape(lstm_out) = (batch_size, timesteps, cell_size)
-
-            if self.keep_prob < 1.:
-                lstm_out = tf.nn.dropout(lstm_out, self.keep_prob)
-
             if self.reuse is None:
                 self._trainable_weights = vs.global_variables()
-
         self.reuse = True
 
+    def __call__(self, x, initial_state, seq_length = None):
+        # shape(x) = (batch_size, num_timesteps, embedding_dim)
+        lstm_out, next_state = tf.nn.dynamic_rnn(self.cell, x, initial_state=initial_state, sequence_length=seq_length)
+        # shape(lstm_out) = (batch_size, timesteps, cell_size)
+        if self.keep_prob < 1.:
+            lstm_out = tf.nn.dropout(lstm_out, self.keep_prob)
         return lstm_out, next_state
 
 class SoftmaxLoss(keras.layers.Layer):
