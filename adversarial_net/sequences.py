@@ -121,20 +121,17 @@ class AdversarialLoss(object):
         return []
 
 class VirtualAdversarialLoss(AdversarialLoss):
-    def __init__(self, perturb_norm_length, small_constant_for_finite_diff, eos_tag, iter_count):
+    def __init__(self, perturb_norm_length, small_constant_for_finite_diff, iter_count):
         self.perturb_norm_length = perturb_norm_length
         self.small_constant_for_finite_diff = small_constant_for_finite_diff
-        self.eos_tag = eos_tag
         self.iter_count = iter_count
 
-    def __call__(self, compute_logits_fn, logits, target, X_tensor, sequence_length):
+    def __call__(self, compute_logits_fn, logits, target, eos_indicators, sequence_length):
         batch_size_tensor = tf.shape(target)[0]
         logits = tf.stop_gradient(logits)
         laststep_gather_indices = tf.stack([tf.range(batch_size_tensor), sequence_length - 1], 1)
-        # eos_indicator (None, steps)
-        eos_indicator = tf.cast(tf.equal(X_tensor, self.eos_tag), tf.float32)
         # final_output_weights (None,)
-        final_step_weights = tf.gather_nd(eos_indicator, laststep_gather_indices)
+        final_step_weights = tf.gather_nd(eos_indicators, laststep_gather_indices)
         # shape(embedded) = (batch_size, num_timesteps, embedding_dim)
         d = tf.random_normal(shape=tf.shape(target))
         for _ in range(self.iter_count):
@@ -308,7 +305,9 @@ class LanguageSequenceGenerator(object):
             lstm_initial_state.append(tf.contrib.rnn.LSTMStateTuple(c_fused_dist_tensor, h_fused_dist_tensor))
         return tuple(lstm_initial_state)
 
-    def construct_batch_sequences_with_states(self, single_seq_tensor, single_seq_content_label, single_seq_topic_label, batch_size, unroll_steps, state_size, lstm_num_layers, bidrec = False):
+    def construct_batch_sequences_with_states(self, single_seq_tensor, single_seq_topic_label, single_weight,
+                                              single_eos_indicators, single_seq_length, batch_size, unroll_steps,
+                                              state_size, lstm_num_layers, bidrec=False):
         indice_tensor = tf.Variable(0, trainable=False)
         indice_tensor = tf.assign_add(indice_tensor, 1, use_locking=True)
         initial_states = {}
@@ -325,9 +324,9 @@ class LanguageSequenceGenerator(object):
                 initial_states[h_state_name] = tf.zeros(state_size)
         batch = tf.contrib.training.batch_sequences_with_states(
             input_key=indice_tensor,
-            input_sequences=single_seq_tensor,
-            input_context={"content_label": single_seq_content_label, "topic_label": single_seq_topic_label},
-            input_length=tf.shape(single_seq_tensor)[0],
+            input_sequences={"X": single_seq_tensor, "weight": single_weight, "eos_indicators": single_eos_indicators},
+            input_context={"topic_label": single_seq_topic_label},
+            input_length=single_seq_length,
             initial_states=initial_states,
             num_unroll=unroll_steps,
             batch_size=batch_size,
