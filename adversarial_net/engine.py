@@ -176,9 +176,9 @@ class BaseModel(object):
 
     def _restore_pretained_variables(self, sess, pretrained_model_path, variables_to_restore, save_model_path = None, saver_for_restore = None):
         if pretrained_model_path:
-            assert variables_to_restore
             logger.info('Will attempt restore from %s: %s', pretrained_model_path, variables_to_restore)
             if saver_for_restore is None:
+                assert variables_to_restore
                 saver_for_restore = tf.train.Saver(variables_to_restore)
             self._maybe_restore_pretrained_model(sess, saver_for_restore, osp.dirname(pretrained_model_path), osp.dirname(save_model_path))
 

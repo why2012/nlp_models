@@ -19,8 +19,11 @@ modules={"EMBEDDING": "to_embedding", "FG_S": "fake_genuing_discriminator_seq2se
          "CL_LOSS": "classification_loss", "SEQ_G_LSTM": "generator_lstms", "SEQ_G": "sequence_generator"}
 
 class AdversarialDDGModel(BaseModel):
+    stepA_modules = ["EMBEDDING", "FG_S", "FG_D", "SEQ_G_LSTM", "SEQ_G"]
+    stepB_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS", "SEQ_G_LSTM", "SEQ_G"]
     def __init__(self, use_average = False, init_modules=modules.keys()):
         super(AdversarialDDGModel, self).__init__(use_average=use_average)
+        self._fit_kwargs = {}
         modules_abbreviation = init_modules
         # EMBEDDING
         if "EMBEDDING" in modules_abbreviation:
@@ -53,7 +56,7 @@ class AdversarialDDGModel(BaseModel):
                 layer_sizes=[self.arguments["adv_cl_sequence"]["hidden_size"]] * self.arguments["adv_cl_sequence"][
                     "num_layers"],
                 input_size=self.arguments["adv_cl_sequence"]["input_size"],
-                num_classes=self.arguments["adv_cl_sequence"]["num_classes"],
+                num_classes=1,
                 keep_prob=self.arguments["adv_cl_sequence"]["keep_prob"])
         # T_D
         if "T_D" in modules_abbreviation:
@@ -193,16 +196,154 @@ class AdversarialDDGModel(BaseModel):
         # logits (batch_size, n_classes)
         logits = dense_fn(final_output_tensor)
         cl_loss = self.classification_loss([logits, y_tensor, final_output_weights])
-        return cl_loss
+        return cl_loss, final_states
 
-    def build_fake_genuing_discriminator(self):
-        pass
+    def compute_d_logits(self, embedding,  sequence_len, get_lstm_state_fn, seq2seq_fn, dense_fn):
+        # lstm_initial_state  [LSTMTuple(c, h), ...]
+        lstm_initial_state = get_lstm_state_fn()
+        # lstm_output_tensor (None, steps, lstm_size)
+        lstm_output_tensor, final_states = seq2seq_fn(embedding, lstm_initial_state, sequence_len)
+        # logits (batch_size, n_classes)
+        logits = dense_fn(final_output_tensor)
+        return logits, final_states
+
+    def compute_adv_loss(self, cl_loss, embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn):
+        def local_compute_cl_loss(perturbed_embedding):
+            return self.compute_cl_loss(perturbed_embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn)
+        adv_loss = self.adversarial_loss(cl_loss, local_compute_cl_loss, embedding)
+        return adv_loss
+
+    def get_genuing_inputs(self):
+        if not hasattr(self, "_genuing_inputs_cache"):
+            self._genuing_inputs_cache = self.genuing_inputs()
+        return self._genuing_inputs_cache
+
+    def get_synthesize_inputs(self):
+        if not hasattr(self, "_synthesize_inputs_cache"):
+            self._synthesize_inputs_cache = self.synthesize_inputs()
+        return self._synthesize_inputs_cache
+
+    def build_fake_genuing_discriminator(self, LAMBDA = 10):
+        g_get_lstm_state, g_save_lstm_state, g_embedding, g_y_tensor, g_weight_tensor, g_eos_indicators, g_seq_length, g_laststep_gather_indices = self.get_genuing_inputs()
+        s_get_lstm_state, s_save_lstm_state, s_embedding, s_y_tensor, s_weight_tensor, s_eos_indicators, s_seq_length, s_laststep_gather_indices = self.get_synthesize_inputs()
+        def get_interpolated_states_fn(alpha, g_get_lstm_state, s_get_lstm_state):
+            def get_states_fn():
+                alpha = tf.squeeze(alpha)
+                lstm_initial_state = []
+                g_lstm_initial_state = g_get_lstm_state()
+                s_lstm_initial_state = s_get_lstm_state()
+                for g_lstm_tuple, s_lstm_tuple in zip(g_lstm_initial_state, s_lstm_initial_state):
+                    g_c = g_lstm_tuple.c
+                    s_c = s_lstm_tuple.c
+                    g_h = g_lstm_tuple.h
+                    s_h = s_lstm_tuple.h
+                    c = g_c + alpha * (s_c - g_c)
+                    h = g_h + alpha * (s_h - g_h)
+                    lstm_initial_state.append(tf.contrib.rnn.LSTMStateTuple(c, h))
+                lstm_initial_state = tuple(lstm_initial_state)
+                return lstm_initial_state
+            return get_states_fn
+        # logits (batch_size, 1)
+        genuing_logits, genuing_final_states = self.compute_d_logits(g_embedding, g_seq_length, g_get_lstm_state, self.fake_genuing_discriminator_seq2seq, self.fake_genuing_discriminator_dense)
+        fake_logits, fake_final_states = self.compute_d_logits(s_embedding, s_seq_length, s_get_lstm_state, self.fake_genuing_discriminator_seq2seq, self.fake_genuing_discriminator_dense)
+        # losses
+        discriminator_loss = tf.reduce_mean(fake_logits) - tf.reduce_mean(genuing_logits)
+        generator_loss = -tf.reduce_mean(fake_logits)
+        # WGAN lipschitz-penalty
+        alpha = tf.random_uniform(shape=[tf.shape(g_embedding)[0], 1, 1], minval=0., maxval=1.)
+        differences = s_embedding - g_embedding
+        interpolates = g_embedding + (alpha * differences)
+        interpolates_cost = self.compute_d_logits(interpolates, s_seq_length,
+                                                  get_interpolated_states_fn(alpha, g_get_lstm_state, s_get_lstm_state),
+                                                  self.fake_genuing_discriminator_seq2seq, self.fake_genuing_discriminator_dense)
+        gradients = tf.gradients(interpolates_cost, [interpolates])[0]
+        slopes = tf.sqrt(tf.reduce_sum(tf.square(gradients), reduction_indices=[1, 2]))
+        gradient_penalty = tf.reduce_mean((slopes - 1.) ** 2)
+        discriminator_loss += LAMBDA * gradient_penalty
+        # save_lstm_state
+        with tf.control_dependencies([g_save_lstm_state(genuing_final_states), s_save_lstm_state(fake_final_states)]):
+            discriminator_loss = tf.identity(discriminator_loss)
+            generator_loss = tf.identity(generator_loss)
+        return discriminator_loss, generator_loss
 
     def build_topic_discriminator(self):
-        pass
+        g_get_lstm_state, g_save_lstm_state, g_embedding, g_y_tensor, g_weight_tensor, g_eos_indicators, g_seq_length, g_laststep_gather_indices = self.get_genuing_inputs()
+        s_get_lstm_state, s_save_lstm_state, s_embedding, s_y_tensor, s_weight_tensor, s_eos_indicators, s_seq_length, s_laststep_gather_indices = self.get_synthesize_inputs()
+        # losses
+        genuing_cl_loss, genuing_final_states = self.compute_cl_loss(g_embedding, g_y_tensor, g_weight_tensor, g_seq_length,
+                                                             g_laststep_gather_indices, g_get_lstm_state,
+                                                             self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
+        fake_cl_loss, fake_final_states = self.compute_cl_loss(s_embedding, s_y_tensor, s_weight_tensor, s_seq_length,
+                                                             s_laststep_gather_indices, s_get_lstm_state,
+                                                             self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
+        genuing_adv_loss = self.compute_adv_loss(genuing_cl_loss, g_embedding, g_y_tensor, g_weight_tensor,
+                                                 g_seq_length, g_laststep_gather_indices, g_get_lstm_state,
+                                                 self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
+        fake_adv_loss = self.compute_adv_loss(fake_cl_loss, s_embedding, s_y_tensor, s_weight_tensor,
+                                                 s_seq_length, s_laststep_gather_indices, s_get_lstm_state,
+                                                 self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
+        genuing_total_loss = genuing_cl_loss + genuing_adv_loss
+        fake_total_loss = fake_cl_loss + fake_adv_loss
+        tf.summary.scalar('genuing_adv_loss', genuing_adv_loss)
+        tf.summary.scalar('fake_adv_loss', fake_adv_loss)
+        # save_lstm_state
+        with tf.control_dependencies([g_save_lstm_state(genuing_final_states)]):
+            genuing_cl_loss = tf.identity(genuing_cl_loss)
+            genuing_total_loss = tf.identity(genuing_total_loss)
+        with tf.control_dependencies([s_save_lstm_state(fake_final_states)]):
+            fake_cl_loss = tf.identity(fake_cl_loss)
+            fake_total_loss = tf.identity(fake_total_loss)
+        return genuing_cl_loss, genuing_total_loss, fake_cl_loss, fake_total_loss
 
-    def build(self):
-        pass
+    # stepA: fake_genuing_discriminator & generator
+    # stepB: topic_discriminator & generator
+    def build(self, stepA = True, stepB = False):
+        relevent_sequences = None
+        variables = {}
+        savers = {}
+        self._fit_kwargs["variables"] = variables
+        self._fit_kwargs["savers"] = savers
+        if stepA:
+            discriminator_loss, generator_loss = self.build_fake_genuing_discriminator()
+            relevent_sequences = {"EMBEDDING": self.to_embedding, "FG_S": self.fake_genuing_discriminator_seq2seq,
+                                  "FG_D": self.fake_genuing_discriminator_dense,
+                                  "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
+            variables["discriminator_loss"] = []
+            variables["generator_loss"] = []
+            variables["discriminator_loss"] += relevent_sequences["FG_S"].trainable_weights
+            variables["discriminator_loss"] += relevent_sequences["FG_D"].trainable_weights
+            variables["generator_loss"] += relevent_sequences["SEQ_G_LSTM"].trainable_weights
+            variables["generator_loss"] += relevent_sequences["SEQ_G"].trainable_weights
+        elif stepB:
+            genuing_cl_loss, genuing_total_loss, fake_cl_loss, fake_total_loss = self.build_topic_discriminator()
+            relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
+                                  "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss,
+                                  "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
+            variables["genuing_total_loss"] = []
+            variables["fake_cl_loss"] = []
+            variables["fake_total_loss"] = []
+            variables["genuing_total_loss"] += relevent_sequences["EMBEDDING"].trainable_weights
+            variables["genuing_total_loss"] += relevent_sequences["T_S"].trainable_weights
+            variables["genuing_total_loss"] += relevent_sequences["T_D"].trainable_weights
+            variables["genuing_total_loss"] += relevent_sequences["ADV_LOSS"].trainable_weights
+            variables["fake_cl_loss"] += relevent_sequences["SEQ_G_LSTM"].trainable_weights
+            variables["fake_cl_loss"] += relevent_sequences["SEQ_G"].trainable_weights
+            variables["fake_total_loss"] += relevent_sequences["EMBEDDING"].trainable_weights
+            variables["fake_total_loss"] += relevent_sequences["T_S"].trainable_weights
+            variables["fake_total_loss"] += relevent_sequences["T_D"].trainable_weights
+            variables["fake_total_loss"] += relevent_sequences["ADV_LOSS"].trainable_weights
 
-    def fit(self, save_model_path=None, pretrained_model_dir=None):
-        pass
+        for tag, seq in relevent_sequences.items():
+            pretrain_restorer = seq.pretrain_restorer
+            if pretrain_restorer:
+                savers[tag] = seq.pretrain_restorer
+
+    def restore_pretrained_variables(self, sess, save_model_path, pretrain_model_pathes):
+        savers = self._fit_kwargs["savers"]
+        for tag, saver in savers.items():
+            pretrained_model_path = pretrain_model_pathes[tag]
+            self._restore_pretained_variables(sess, pretrained_model_path, variables_to_restore = None, save_model_path = osp.dirname(save_model_path), saver_for_restore = saver)
+
+    def fit(self, save_model_path=None, pretrain_model_pathes = {}):
+        with tf.Session() as sess:
+            self.restore_pretrained_variables(sess, save_model_path, pretrain_model_pathes)
