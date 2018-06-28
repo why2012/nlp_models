@@ -312,7 +312,6 @@ class AdversarialDDGModel(BaseModel):
     # stepC: use topic_discriminator to train topic_generator
     # stepD: use topic_generator and genuing data to re-train topic_discriminator
     def build(self, stepA = True, stepB = False, stepC = False, stepD = False):
-        relevent_sequences = None
         variables = {}
         savers = {}
         losses = {}
