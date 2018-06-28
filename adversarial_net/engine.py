@@ -116,11 +116,23 @@ class BaseModel(object):
         else:
             return _trainable_weights
 
-    def _get_and_clip_grads_by_variables(self, loss, variables, max_grad_norm):
-        grads = tf.gradients(loss, variables)
-        clipped_grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
-        clipped_grads_and_vars = list(zip(clipped_grads, variables))
-        return clipped_grads_and_vars
+    def _get_and_clip_grads_by_variables(self, loss, variables, max_grad_norm, exclude_op_names = []):
+        def in_exclude_op_names(op_name):
+            for exclude_name in exclude_op_names:
+                if exclude_name in op_name:
+                    return True
+            return False
+        exclude_vars = list(filter(lambda x: in_exclude_op_names(x.op.name), variables))
+        need_clip_vars = list(filter(lambda x: not in_exclude_op_names(x.op.name), variables))
+        grads_and_vars = []
+        if exclude_vars:
+            grads = tf.gradients(loss, exclude_vars)
+            grads_and_vars.extend(list(zip(grads, exclude_vars)))
+        if need_clip_vars:
+            grads = tf.gradients(loss, need_clip_vars)
+            clipped_grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
+            grads_and_vars.extend(list(zip(clipped_grads, need_clip_vars)))
+        return grads_and_vars.extend
 
     def _trainable_variables_filter(self, filter_func, vars_list = None):
         return list(filter(filter_func, tf.trainable_variables() if vars_list is None else vars_list))
@@ -221,19 +233,30 @@ class BaseModel(object):
             for key, value in debug_results:
                 logger.info("Debug [%s] eval results: %s" % (key, value))
         if self.debug_trace and global_step_val % self.arguments["eval_steps"] == 0 and run_metadata:
-            summary_writer.add_run_metadata(run_metadata, "step-%d" % global_step_val)
+            if isinstance(run_metadata, list):
+                for i, metadata in enumerate(run_metadata):
+                    summary_writer.add_run_metadata(metadata, "%d-step-%d" % (i, global_step_val))
+            else:
+                summary_writer.add_run_metadata(run_metadata, "step-%d" % global_step_val)
             if self.timeline_dir:
-                fetched_timeline = timeline.Timeline(run_metadata.step_stats)
-                chrome_trace = fetched_timeline.generate_chrome_trace_format()
-                with open(osp.join(self.timeline_dir, '%s_timeline_step_%d.json' % (self.model_name, global_step_val)), 'w') as f:
-                    f.write(chrome_trace)
+                if isinstance(run_metadata, list):
+                    for i, metadata in enumerate(run_metadata):
+                        fetched_timeline = timeline.Timeline(metadata.step_stats)
+                        chrome_trace = fetched_timeline.generate_chrome_trace_format()
+                        with open(osp.join(self.timeline_dir, '%s_timeline_id_%d_step_%d.json' % (self.model_name, i, global_step_val)), 'w') as f:
+                            f.write(chrome_trace)
+                else:
+                    fetched_timeline = timeline.Timeline(run_metadata.step_stats)
+                    chrome_trace = fetched_timeline.generate_chrome_trace_format()
+                    with open(osp.join(self.timeline_dir, '%s_timeline_step_%d.json' % (self.model_name, global_step_val)), 'w') as f:
+                        f.write(chrome_trace)
         summary_writer.add_summary(summary, global_step_val)
 
     def _eval_step(self, global_step_val, max_steps, loss_val, acc_val = -1, duration = -1):
         if global_step_val % self.arguments["eval_steps"] == 0:
             if not self.arguments["eval_acc"]:
                 logger.info("loss at step-%s/%s: %s, duration: %s" % (global_step_val, max_steps, loss_val, duration))
-            elif acc_val > 0 and self.arguments["eval_acc"]:
+            elif (isinstance(acc_val, dict) or acc_val > 0) and self.arguments["eval_acc"]:
                 logger.info(
                     "loss at step-%s/%s: %s, acc: %s, duration: %s" % (
                     global_step_val, max_steps, loss_val, acc_val, duration))
@@ -296,6 +319,8 @@ class BaseModel(object):
                                                                                feed_dict=feed_dict, run_options=run_options,
                                                                                run_metadata=run_metadata)
                 duration = time.time() - start_time
+                if loss_val < best_loss_val:
+                    best_loss_val = loss_val
                 # summary & debug trace phase
                 self._summary_step(debug_tensors=self.debug_tensors, global_step_val=global_step_val,
                                    summary_writer=summary_writer, summary=summary, run_metadata=run_metadata, feed_dict=feed_dict)
