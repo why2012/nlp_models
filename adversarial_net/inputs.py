@@ -39,6 +39,14 @@ class DataLoader(object):
         else:
             return training_dataset, testing_dataset
 
+    @classmethod
+    def reload_word_counter(cls, base_dir, vocab_filename="imdb_word_freqs.pickle"):
+        wordCounter = WordCounter()
+        vocab_abspath = osp.join(base_dir, vocab_filename)
+        with open(vocab_abspath, "rb") as f:
+            wordCounter.words_list = pickle.load(f)
+        return wordCounter
+
     def _load_imdb(self, vocab_filename="imdb_word_freqs.pickle", dataset_filename="imdb_dataset.pickle",
                    include_unsup=True):
         vocab_abspath = osp.join(self.base_dir, vocab_filename)
@@ -196,7 +204,7 @@ def construct_autoencoder_model_input_tensor_with_state(datapath, batch_size, un
 
     return construct_input_tensor_with_state(args_fn, datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, "autoencoder_model", bidrec)
 
-def construct_classification_model_input_tensor_with_state(datapath, phase, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False):
+def construct_classification_model_input_tensor_with_state(datapath, phase, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False, count_examples = [0]):
     if phase == "train":
         X_name = "X_train"
         y_name = "y_train"
@@ -217,6 +225,7 @@ def construct_classification_model_input_tensor_with_state(datapath, phase, batc
         weights = datapack[weight_name]
         X_y_w_samples = list(zip(X_train, y_train, weights))
         pool = SimpleInMemorySamplePool(X_y_w_samples, chunk_size=1)
+        count_examples[0] = len(X_y_w_samples)
 
         def get_single_example():
             sample, indice = pool.__next__()

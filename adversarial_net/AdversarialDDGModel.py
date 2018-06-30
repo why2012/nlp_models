@@ -2,6 +2,7 @@ from __future__ import division
 from __future__ import absolute_import
 from __future__ import print_function
 import tensorflow as tf
+import numpy as np
 from adversarial_net.engine import BaseModel
 from adversarial_net import arguments as flags
 from adversarial_net import sequences as seq
@@ -11,6 +12,7 @@ from adversarial_net.inputs import construct_language_model_input_tensor_with_st
 from adversarial_net.inputs import construct_classification_model_input_tensor_with_state
 from adversarial_net.inputs import construct_autoencoder_model_input_tensor_with_state
 from adversarial_net import osp
+from adversarial_net.inputs import DataLoader
 
 logger = getLogger("adv_model")
 EOS_TAG = 2
@@ -94,9 +96,10 @@ class AdversarialDDGModel(BaseModel):
                     input_size=self.arguments["lm_sequence"]["rnn_cell_size"],
                     embedding_weights=self.to_embedding.embedding_layer.var))
 
-    def genuing_inputs(self):
+    def genuing_inputs(self, inputs_args = None):
+        inputs_args = inputs_args if inputs_args is not None else self.arguments["adv_cl_inputs"]
         logger.info("constructing classification model dataset...")
-        inputs, get_lstm_state, save_lstm_state = construct_classification_model_input_tensor_with_state(**self.arguments["adv_cl_inputs"])
+        inputs, get_lstm_state, save_lstm_state = construct_classification_model_input_tensor_with_state(**inputs_args)
         logger.info("classification model dataset is constructed.")
         # X_tensor, y_tensor, weight_tensor
         # X_tensor (batch_size, steps)
@@ -111,7 +114,7 @@ class AdversarialDDGModel(BaseModel):
         eos_indicators = tf.cast(tf.equal(X_tensor, EOS_TAG), tf.float32)
         return get_lstm_state, save_lstm_state, embedding, y_tensor, weight_tensor, eos_indicators, inputs.length, laststep_gather_indices
 
-    def generate_synthesize_inputs(self, seq_length_tensor, batch_size_tensor = 1, topic_count = 2):
+    def generate_synthesize_inputs(self, seq_length_tensor, batch_size_tensor = 1, topic_count = 2, return_vocab_index = False):
         content_initial_states = self.sequence_generator.content_states(batch_size_tensor)
         # dist_fuse_w_y (batch_size,) range(0, topic_count)
         dist_fuse_w_y = tf.round(tf.random_uniform((batch_size_tensor,), minval=0, maxval=topic_count - 1))
@@ -129,7 +132,8 @@ class AdversarialDDGModel(BaseModel):
                     topic_initial_states=topic_initial_states,
                     step_one_inputs=step_one_inputs,
                     seq_length=seq_length_tensor,
-                    keep_prob=self.arguments["lm_sequence"]["lstm_keep_pro_out"])
+                    keep_prob=self.arguments["lm_sequence"]["lstm_keep_pro_out"],
+                    return_vocab_index=return_vocab_index)
         # Y_tensor (batch_size,) range(0, topic_count)
         y_tensor = dist_fuse_w_y
         # weight_tensor (1, seq_length_tensor)
@@ -187,7 +191,7 @@ class AdversarialDDGModel(BaseModel):
         laststep_gather_indices = tf.stack([tf.range(tf.shape(embed_X_tensor)[0]), batch.length - 1], 1)
         return get_lstm_state, save_lstm_state, embed_X_tensor, y_tensor, weight_tensor, eos_indicators, batch.length, laststep_gather_indices
 
-    def compute_cl_loss(self, embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn):
+    def compute_cl_loss(self, embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn, return_logits = False):
         # lstm_initial_state  [LSTMTuple(c, h), ...]
         lstm_initial_state = get_lstm_state_fn()
         # lstm_output_tensor (None, steps, lstm_size)
@@ -199,7 +203,10 @@ class AdversarialDDGModel(BaseModel):
         # logits (batch_size, n_classes)
         logits = dense_fn(final_output_tensor)
         cl_loss = self.classification_loss([logits, y_tensor, final_output_weights])
-        return cl_loss, final_states
+        if return_logits:
+            return cl_loss, final_states, logits
+        else:
+            return cl_loss, final_states
 
     def compute_d_logits(self, embedding,  sequence_len, get_lstm_state_fn, seq2seq_fn, dense_fn):
         # lstm_initial_state  [LSTMTuple(c, h), ...]
@@ -212,7 +219,8 @@ class AdversarialDDGModel(BaseModel):
 
     def compute_adv_loss(self, cl_loss, embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn):
         def local_compute_cl_loss(perturbed_embedding):
-            return self.compute_cl_loss(perturbed_embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn)
+            cl_loss, final_states = self.compute_cl_loss(perturbed_embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn)
+            return cl_loss
         adv_loss = self.adversarial_loss(cl_loss, local_compute_cl_loss, embedding)
         return adv_loss
 
@@ -225,6 +233,33 @@ class AdversarialDDGModel(BaseModel):
         if not hasattr(self, "_synthesize_inputs_cache"):
             self._synthesize_inputs_cache = self.synthesize_inputs()
         return self._synthesize_inputs_cache
+
+    def build_generator_eval_graph(self, batch_size = 2, topic_count = 2, seq_length = 400):
+        seq_length_tensor = tf.constant(seq_length)
+        # seq_X (batch_size, steps)
+        # seq_y (batch_size,)
+        # seq_weight (batch_size, steps)
+        # seq_eos_indicators (batch_size, steps)
+        # seq_length(batch_size,)
+        seq_X, seq_y, seq_weight, seq_eos_indicators, seq_length = self.generate_synthesize_inputs(
+            seq_length_tensor, batch_size, topic_count, return_vocab_index=True)
+        return seq_X, seq_y
+
+    def build_topic_discriminator_eval_graph(self):
+        get_lstm_state, save_lstm_state, embedding, y_tensor, weight_tensor, eos_indicators, seq_length, laststep_gather_indices = self.get_genuing_inputs()
+        # losses
+        genuing_cl_loss, genuing_final_states, genuing_cl_logits = self.compute_cl_loss(embedding, y_tensor,
+                                                                                        weight_tensor, seq_length,
+                                                                                        laststep_gather_indices,
+                                                                                        get_lstm_state,
+                                                                                        self.topic_discriminator_seq2seq,
+                                                                                        self.topic_discriminator_dense,
+                                                                                        return_logits=True)
+        classification_accuracy = tf.contrib.metrics.streaming_accuracy(tf.argmax(genuing_cl_logits, 1), y_tensor, tf.gather_nd(weight_tensor, laststep_gather_indices))
+        # save_lstm_state
+        with tf.control_dependencies([save_lstm_state(genuing_final_states)]):
+            classification_accuracy = tf.identity(classification_accuracy)
+        return classification_accuracy
 
     def build_fake_genuing_discriminator(self, LAMBDA = 10):
         g_get_lstm_state, g_save_lstm_state, g_embedding, g_y_tensor, g_weight_tensor, g_eos_indicators, g_seq_length, g_laststep_gather_indices = self.get_genuing_inputs()
@@ -252,6 +287,20 @@ class AdversarialDDGModel(BaseModel):
         # losses
         discriminator_loss = tf.reduce_mean(fake_logits) - tf.reduce_mean(genuing_logits)
         generator_loss = -tf.reduce_mean(fake_logits)
+        # accs
+        discriminator_genuing_y = tf.ones(tf.shape(genuing_logits)[0])
+        discriminator_genuing_w = tf.gather_nd(g_weight_tensor, g_laststep_gather_indices)
+        discriminator_genuing_acc = layers.accuracy(genuing_logits, discriminator_genuing_y, discriminator_genuing_w)
+        discriminator_fake_y = tf.zeros(tf.shape(fake_logits)[0])
+        discriminator_fake_w = tf.gather_nd(s_weight_tensor, s_laststep_gather_indices)
+        discriminator_fake_acc = layers.accuracy(fake_logits, discriminator_fake_y, discriminator_fake_w)
+        d_total_logits = tf.stack([genuing_logits, fake_logits])
+        d_total_y = tf.stack([discriminator_genuing_y, discriminator_fake_y])
+        d_total_w = tf.stack([discriminator_genuing_w, discriminator_fake_w])
+        discriminator_total_acc = layers.accuracy(d_total_logits, d_total_y, d_total_w)
+        tf.summary.scalar("discriminator_genuing_acc", discriminator_genuing_acc)
+        tf.summary.scalar("discriminator_fake_acc", discriminator_fake_acc)
+        tf.summary.scalar("discriminator_total_acc", discriminator_total_acc)
         # WGAN lipschitz-penalty
         alpha = tf.random_uniform(shape=[tf.shape(g_embedding)[0], 1, 1], minval=0., maxval=1.)
         differences = s_embedding - g_embedding
@@ -267,60 +316,72 @@ class AdversarialDDGModel(BaseModel):
         with tf.control_dependencies([g_save_lstm_state(genuing_final_states), s_save_lstm_state(fake_final_states)]):
             discriminator_loss = tf.identity(discriminator_loss)
             generator_loss = tf.identity(generator_loss)
-        return discriminator_loss, generator_loss
+        return discriminator_loss, generator_loss, [discriminator_genuing_acc, discriminator_fake_acc, discriminator_total_acc]
 
     def build_topic_discriminator(self, genuing_discriminator = False, fake_discriminator = False):
         return_cache = []
         if genuing_discriminator:
             g_get_lstm_state, g_save_lstm_state, g_embedding, g_y_tensor, g_weight_tensor, g_eos_indicators, g_seq_length, g_laststep_gather_indices = self.get_genuing_inputs()
             # losses
-            genuing_cl_loss, genuing_final_states = self.compute_cl_loss(g_embedding, g_y_tensor, g_weight_tensor, g_seq_length,
-                                                                 g_laststep_gather_indices, g_get_lstm_state,
-                                                                 self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
+            genuing_cl_loss, genuing_final_states, genuing_cl_logits = self.compute_cl_loss(g_embedding, g_y_tensor, g_weight_tensor, g_seq_length,
+                                                                                            g_laststep_gather_indices, g_get_lstm_state,
+                                                                                            self.topic_discriminator_seq2seq, self.topic_discriminator_dense,
+                                                                                            return_logits=True)
             genuing_adv_loss = self.compute_adv_loss(genuing_cl_loss, g_embedding, g_y_tensor, g_weight_tensor,
                                                      g_seq_length, g_laststep_gather_indices, g_get_lstm_state,
                                                      self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
             genuing_total_loss = genuing_cl_loss + genuing_adv_loss
+            genuing_cl_acc = layers.accuracy(genuing_cl_logits, g_y_tensor, tf.gather_nd(g_weight_tensor, g_laststep_gather_indices))
             tf.summary.scalar('genuing_adv_loss', genuing_adv_loss)
+            tf.summary.scalar('genuing_cl_acc', genuing_cl_acc)
             # save_lstm_state
             with tf.control_dependencies([g_save_lstm_state(genuing_final_states)]):
                 genuing_cl_loss = tf.identity(genuing_cl_loss)
                 genuing_total_loss = tf.identity(genuing_total_loss)
             return_cache.append(genuing_cl_loss)
             return_cache.append(genuing_total_loss)
+            return_cache.append(genuing_cl_acc)
         if fake_discriminator:
             s_get_lstm_state, s_save_lstm_state, s_embedding, s_y_tensor, s_weight_tensor, s_eos_indicators, s_seq_length, s_laststep_gather_indices = self.get_synthesize_inputs()
-            fake_cl_loss, fake_final_states = self.compute_cl_loss(s_embedding, s_y_tensor, s_weight_tensor, s_seq_length,
-                                                                 s_laststep_gather_indices, s_get_lstm_state,
-                                                                 self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
+            fake_cl_loss, fake_final_states, fake_cl_logits = self.compute_cl_loss(s_embedding, s_y_tensor, s_weight_tensor, s_seq_length,
+                                                                                   s_laststep_gather_indices, s_get_lstm_state,
+                                                                                   self.topic_discriminator_seq2seq, self.topic_discriminator_dense,
+                                                                                   return_logits=True)
             fake_adv_loss = self.compute_adv_loss(fake_cl_loss, s_embedding, s_y_tensor, s_weight_tensor,
                                                      s_seq_length, s_laststep_gather_indices, s_get_lstm_state,
                                                      self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
             fake_total_loss = fake_cl_loss + fake_adv_loss
+            fake_cl_acc = layers.accuracy(fake_cl_logits, s_y_tensor, tf.gather_nd(s_weight_tensor, s_laststep_gather_indices))
             # no need to evaluate adv_loss when training generator
             if genuing_discriminator:
                 tf.summary.scalar('fake_adv_loss', fake_adv_loss)
+            tf.summary.scalar('fake_cl_acc', fake_cl_acc)
             with tf.control_dependencies([s_save_lstm_state(fake_final_states)]):
                 fake_cl_loss = tf.identity(fake_cl_loss)
                 fake_total_loss = tf.identity(fake_total_loss)
             return_cache.append(fake_cl_loss)
             return_cache.append(fake_total_loss)
+            return_cache.append(fake_cl_acc)
         return return_cache
 
     # stepA: fake_genuing_discriminator & generator
     # stepB: pretrain topic_discriminator with genuing data
     # stepC: use topic_discriminator to train topic_generator
     # stepD: use topic_generator and genuing data to re-train topic_discriminator
-    def build(self, stepA = True, stepB = False, stepC = False, stepD = False):
+    def build(self, stepA = True, stepB = False, stepC = False, stepD = False, eval_seq = False, eval_cl = False, **kwargs):
         variables = {}
         savers = {}
         losses = {}
+        accs = {}
+        eval_graph = {}
         self._fit_kwargs["variables"] = variables
         self._fit_kwargs["savers"] = savers
         self._fit_kwargs["losses"] = losses
+        self._fit_kwargs["accs"] = accs
+        self._fit_kwargs["eval_graph"] = eval_graph
         if stepA:
             self.stepTag = "stepA"
-            discriminator_loss, generator_loss = self.build_fake_genuing_discriminator()
+            discriminator_loss, generator_loss, genuing_fake_accs = self.build_fake_genuing_discriminator()
             losses["discriminator_loss"] = discriminator_loss
             losses["generator_loss"] = generator_loss
             relevent_sequences = {"EMBEDDING": self.to_embedding, "FG_S": self.fake_genuing_discriminator_seq2seq,
@@ -332,9 +393,12 @@ class AdversarialDDGModel(BaseModel):
             variables["discriminator_loss"] += relevent_sequences["FG_D"].trainable_weights
             variables["generator_loss"] += relevent_sequences["SEQ_G_LSTM"].trainable_weights
             variables["generator_loss"] += relevent_sequences["SEQ_G"].trainable_weights
+            accs["discriminator_genuing_acc"] = genuing_fake_accs[0]
+            accs["discriminator_fake_acc"] = genuing_fake_accs[1]
+            accs["discriminator_total_acc"] = genuing_fake_accs[2]
         elif stepB:
             self.stepTag = "stepB"
-            genuing_cl_loss, genuing_total_loss = self.build_topic_discriminator(genuing_discriminator=True)
+            genuing_cl_loss, genuing_total_loss, genuing_cl_acc = self.build_topic_discriminator(genuing_discriminator=True)
             losses["genuing_total_loss"] = genuing_total_loss
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss}
@@ -343,18 +407,21 @@ class AdversarialDDGModel(BaseModel):
             variables["genuing_total_loss"] += relevent_sequences["T_S"].trainable_weights
             variables["genuing_total_loss"] += relevent_sequences["T_D"].trainable_weights
             variables["genuing_total_loss"] += relevent_sequences["ADV_LOSS"].trainable_weights
+            accs["genuing_cl_acc"] = genuing_cl_acc
         elif stepC:
             self.stepTag = "stepC"
-            fake_cl_loss, fake_total_loss = self.build_topic_discriminator(fake_discriminator=True)
+            fake_cl_loss, fake_total_loss, fake_cl_acc = self.build_topic_discriminator(fake_discriminator=True)
             losses["fake_cl_loss"] = fake_cl_loss
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss,
                                   "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
             variables["fake_cl_loss"] += relevent_sequences["SEQ_G_LSTM"].trainable_weights
             variables["fake_cl_loss"] += relevent_sequences["SEQ_G"].trainable_weights
+            accs["fake_cl_acc"] = fake_cl_acc
         elif stepD:
             self.stepTag = "stepD"
-            genuing_cl_loss, genuing_total_loss, fake_cl_loss, fake_total_loss = self.build_topic_discriminator(genuing_discriminator=True, fake_discriminator=True)
+            genuing_cl_loss, genuing_total_loss, genuing_cl_acc, fake_cl_loss, fake_total_loss, fake_cl_acc = self.build_topic_discriminator(
+                genuing_discriminator=True, fake_discriminator=True)
             losses["total_loss"] = genuing_total_loss + fake_total_loss
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss,
@@ -364,8 +431,26 @@ class AdversarialDDGModel(BaseModel):
             variables["total_loss"] += relevent_sequences["T_S"].trainable_weights
             variables["total_loss"] += relevent_sequences["T_D"].trainable_weights
             variables["total_loss"] += relevent_sequences["ADV_LOSS"].trainable_weights
+            accs["genuing_cl_acc"] = genuing_cl_acc
+            accs["fake_cl_acc"] = fake_cl_acc
+        elif eval_seq:
+            self.stepTag = "eval_seq"
+            relevent_sequences = {"EMBEDDING": self.to_embedding, "SEQ_G_LSTM": self.generator_lstms,
+                                  "SEQ_G": self.sequence_generator}
+            batch_size = kwargs["batch_size"]
+            topic_count = kwargs["topic_count"]
+            seq_length = kwargs["seq_length"]
+            seq_X, seq_y = self.build_generator_eval_graph(batch_size = batch_size, topic_count = topic_count, seq_length = seq_length)
+            eval_graph["seq_X"] = seq_X
+            eval_graph["seq_y"] = seq_y
+        elif eval_cl:
+            self.stepTag = "eval_cl"
+            relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
+                                  "T_D": self.topic_discriminator_dense}
+            acc_op = self.build_topic_discriminator_eval_graph()
+            eval_graph["acc_op"] = acc_op
         else:
-            raise Exception("one of step[A~C] must be True")
+            raise Exception("Unsupport ops")
 
         for tag, seq in relevent_sequences.items():
             pretrain_restorer = seq.pretrain_restorer
@@ -422,24 +507,33 @@ class AdversarialDDGModel(BaseModel):
             self._restore_pretained_variables(sess, pretrained_model_path, variables_to_restore = None, save_model_path = osp.dirname(save_model_path), saver_for_restore = saver)
 
     def run_training_stepA(self, sess, save_model_path, max_steps, critic_iters = 10):
+        losses = self._fit_kwargs["losses"]
+        train_ops = self._fit_kwargs["train_ops"]
+        accs = self._fit_kwargs["accs"]
         discriminator_loss = losses["discriminator_loss"]
         generator_loss = losses["generator_loss"]
         discriminator_train_op = train_ops["discriminator_train_op"]
         generator_train_op = train_ops["generator_train_op"]
+        discriminator_genuing_acc = accs["discriminator_genuing_acc"]
+        discriminator_fake_acc = accs["discriminator_fake_acc"]
+        discriminator_total_acc = accs["discriminator_total_acc"]
+        acc_ops = {"d_genuing_acc": discriminator_genuing_acc,
+                   "d_fake_acc": discriminator_fake_acc,
+                   "d_total_acc": discriminator_total_acc}
         discriminator_run_options, discriminator_run_metadata = self._pretrain_step(self.global_step_val)
         generator_run_options, generator_run_metadata = self._pretrain_step(self.global_step_val)
         start_time = time.time()
-        _, generator_loss_val, self.global_step_val, summary = sess.run([generator_train_op, generator_loss, self.generator_global_step,
-                                                                         self.train_step_vars["merged_summary"]],
-                                                                         feed_dict=self.feed_dict,
-                                                                         options=discriminator_run_options,
-                                                                         run_metadata=discriminator_run_metadata)
+        _, generator_loss_val, self.global_step_val, summary, acc_vals = sess.run([generator_train_op, generator_loss, self.generator_global_step,
+                                                                                 self.train_step_vars["merged_summary"], acc_ops],
+                                                                                 feed_dict=self.feed_dict,
+                                                                                 options=generator_run_options,
+                                                                                 run_metadata=generator_run_metadata)
         discriminator_loss_val = -1
         for _ in range(critic_iters):
             _, discriminator_loss_val = sess.run([discriminator_train_op, discriminator_loss],
                                                  feed_dict=self.feed_dict,
-                                                 options=generator_run_options,
-                                                 run_metadata=generator_run_metadata)
+                                                 options=discriminator_run_options,
+                                                 run_metadata=discriminator_run_metadata)
         duration = time.time() - start_time
         if generator_loss_val < self.train_step_vars["best_loss_val"]:
             self.train_step_vars["best_loss_val"] = generator_loss_val
@@ -449,19 +543,95 @@ class AdversarialDDGModel(BaseModel):
                            feed_dict=self.feed_dict)
         self._eval_step(self.global_step_val, max_steps,
                         loss_val={"generator_loss_val": generator_loss_val, "discriminator_loss_val": discriminator_loss_val},
-                        acc_val=-1, duration=duration)
+                        acc_val=acc_vals, duration=duration)
         self._save_model_step(sess, self.train_step_vars["model_saver"], save_model_path, generator_loss_val,
-                              self.train_step_vars["best_loss_val"], self.generator_global_step)
+                              self.train_step_vars["best_loss_val"], self.global_step_val)
         return generator_loss_val
 
+    def single_loss_train_step(self, sess, train_op, loss, global_step, acc_ops, save_model_path, max_steps):
+        run_options, run_metadata = self._pretrain_step(self.global_step_val)
+        start_time = time.time()
+        _, loss_val, self.global_step_val, summary, acc_vals = sess.run(
+            [train_op, loss, global_step, self.train_step_vars["merged_summary"], acc_ops],
+            feed_dict=self.feed_dict,
+            options=run_options,
+            run_metadata=run_metadata)
+        duration = time.time() - start_time
+        if loss_val < self.train_step_vars["best_loss_val"]:
+            self.train_step_vars["best_loss_val"] =loss_val
+        self._summary_step(debug_tensors=self.debug_tensors, global_step_val=self.global_step_val,
+                           summary_writer=self.train_step_vars["summary_writer"], summary=summary,
+                           run_metadata=run_metadata, feed_dict=self.feed_dict)
+        self._eval_step(self.global_step_val, max_steps,
+                        loss_val=loss_val,
+                        acc_val=acc_vals, duration=duration)
+        self._save_model_step(sess, self.train_step_vars["model_saver"], save_model_path, loss_val,
+                              self.train_step_vars["best_loss_val"], self.global_step_val)
+        return loss_val
+
     def run_training_stepB(self, sess, save_model_path, max_steps):
-        return 0
+        losses = self._fit_kwargs["losses"]
+        train_ops = self._fit_kwargs["train_ops"]
+        accs = self._fit_kwargs["accs"]
+        discriminator_loss = losses["discriminator_loss"]
+        discriminator_train_op = train_ops["discriminator_train_op"]
+        acc_ops = accs
+        return self.single_loss_train_step(
+            sess, train_op=discriminator_train_op, loss=discriminator_loss, global_step=self.discriminator_global_step,
+            acc_ops=acc_ops, save_model_path=save_model_path, max_steps=max_steps)
 
     def run_training_stepC(self, sess, save_model_path, max_steps):
-        return 0
+        losses = self._fit_kwargs["losses"]
+        train_ops = self._fit_kwargs["train_ops"]
+        accs = self._fit_kwargs["accs"]
+        generator_loss = losses["fake_cl_loss"]
+        generator_train_op = train_ops["generator_train_op"]
+        acc_ops = accs
+        return self.single_loss_train_step(
+            sess, train_op=generator_train_op, loss=generator_loss, global_step=self.generator_global_step,
+            acc_ops=acc_ops, save_model_path=save_model_path, max_steps=max_steps)
 
     def run_training_stepD(self, sess, save_model_path, max_steps):
-        return 0
+        losses = self._fit_kwargs["losses"]
+        train_ops = self._fit_kwargs["train_ops"]
+        accs = self._fit_kwargs["accs"]
+        discriminator_loss = losses["total_loss"]
+        discriminator_train_op = train_ops["discriminator_train_op"]
+        acc_ops = accs
+        return self.single_loss_train_step(
+            sess, train_op=discriminator_train_op, loss=discriminator_loss, global_step=self.discriminator_global_step,
+            acc_ops=acc_ops, save_model_path=save_model_path, max_steps=max_steps)
+
+    def eval(self, save_model_path):
+        model_phase = 1 if self.arguments["phase"] in ["train"] else 0
+        self.feed_dict[tf.keras.backend.learning_phase()] = model_phase
+        eval_graph = self._fit_kwargs["eval_graph"]
+        with tf.Session() as sess:
+            coodinator = tf.train.Coordinator()
+            threads = tf.train.start_queue_runners(sess, coodinator)
+            self._resotre_training_model(sess=sess, save_model_path=save_model_path)
+            if self.stepTag == "eval_seq":
+                wordCounter = DataLoader.reload_word_counter(base_dir=self.arguments["inputs"]["datapath"])
+                seq_X = eval_graph["seq_X"]
+                seq_y = eval_graph["seq_y"]
+                seq_X_val, seq_y_val = sess.run([seq_X, seq_y])
+                docs = wordCounter.reverse(indices=seq_X_val, num_words=self.arguments["inputs"]["eval_max_words"])
+                docs_y = list(zip(docs, seq_y_val))
+                for doc, y in docs_y:
+                    logger.info("doc_topic: %s" % y)
+                    logger.info("doc wordss: %s" % doc)
+                    logger.info("-" * 100)
+            elif self.stepTag == "eval_cl":
+                num_batches = int(np.ceil(self.arguments["eval_count_examples"] / self.arguments["batch_size"]))
+                acc_op = eval_graph["acc_op"]
+                current_acc_val = -1
+                for i in range(num_batches):
+                    current_acc_val = sess.run(acc_op)
+                    if (i + 1) % 10 == 0:
+                        logger.info('Running batch %d/%d, acc: %s' % (i + 1, num_batches, current_acc_val))
+                logger.info('final acc: %s' % current_acc_val)
+            coodinator.request_stop()
+            coodinator.join(threads)
 
     def fit(self, save_model_path=None, pretrain_model_pathes = {}):
         model_phase = 1 if self.arguments["phase"] in ["train"] else 0

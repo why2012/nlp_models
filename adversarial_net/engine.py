@@ -14,6 +14,8 @@ def configure():
     flags.register_variable(name="vocab_freqs")
     flags.add_argument(scope="inputs", name="datapath", argtype=str)
     flags.add_argument(scope="inputs", name="dataset", argtype=str)
+    flags.add_argument(scope="inputs", name="eval_count_examples", argtype=int, default=-1)
+    flags.add_argument(scope="inputs", name="eval_max_words", argtype=int, default=50000)
     flags.add_argument(scope="inputs", name="batch_size", argtype=int, default=256)
     flags.add_argument(scope="inputs", name="unroll_steps", argtype=int, default=200)
     flags.add_association(scope="inputs", name="lstm_num_layers", assoc_scope="lm_sequence", assoc_name="rnn_num_layers")
@@ -295,6 +297,17 @@ class BaseModel(object):
                 if global_step_val % self.arguments["save_best_check_steps"] != 0 and loss_val < best_loss_val:
                     logger.info("save model.")
                     model_saver.save(sess, save_model_path, global_step_val)
+
+    def make_restore_average_vars_dict(self, variables):
+        var_restore_dict = {}
+        variable_averages = tf.train.ExponentialMovingAverage(0.999)
+        for v in variables:
+            if v in tf.trainable_variables():
+                name = variable_averages.average_name(v)
+            else:
+                name = v.op.name
+            var_restore_dict[name] = v
+        return var_restore_dict
 
     def run_training(self, train_op, loss, acc=None, feed_dict=None, save_model_path=None, variables_to_restore=None,
                      pretrained_model_path=None):

@@ -171,6 +171,7 @@ class RnnOutputToEmbedding(keras.layers.Layer):
         self.var_b = var_b
         # sampling logit
         self.sampler = sampler
+        self.only_logits = False
 
     def build(self, input_shape):
         if self.var_w is None:
@@ -186,6 +187,7 @@ class RnnOutputToEmbedding(keras.layers.Layer):
         super(RnnOutputToEmbedding, self).build(input_shape)
 
     def call(self, rnn_outputs):
+        only_logits = self.only_logits
         batch_size, seq_length, rnn_size = tf.shape(rnn_outputs)
         # rnn_output (batch_size * seq_length, rnn_size)
         rnn_outputs = tf.reshape(rnn_outputs, (-1, rnn_size))
@@ -193,16 +195,21 @@ class RnnOutputToEmbedding(keras.layers.Layer):
         vocab_logits = tf.matmul(rnn_outputs, self.var_w, transpose_b=True)
         if self.sampler:
             vocab_logits = self.sampler(vocab_logits)
+        # maximum_indices (batch_size * seq_length,)
         maximum_indices = tf.argmax(vocab_logits, -1)
-        indices = tf.stack([tf.range(batch_size), maximum_indices], 1)
-        values = tf.gather_nd(vocab_logits, indices)
-        # sparse_vocab_logits sparse(batch_size * seq_length, vocab_size)
-        sparse_vocab_logits = tf.SparseTensor(indices, values, tf.shape(vocab_logits))
-        # embedding (batch_size * seq_length, embed_size)
-        embedding = tf.sparse_tensor_dense_matmul(sparse_vocab_logits, self.embedding_weights)
-        # embedding (batch_size, seq_length, embed_size)
-        embedding = tf.reshape(embedding, (batch_size, seq_length, rnn_size))
-        return embedding
+        if not only_logits:
+            indices = tf.stack([tf.range(batch_size), maximum_indices], 1)
+            values = tf.gather_nd(vocab_logits, indices)
+            # sparse_vocab_logits sparse(batch_size * seq_length, vocab_size)
+            sparse_vocab_logits = tf.SparseTensor(indices, values, tf.shape(vocab_logits))
+            # embedding (batch_size * seq_length, embed_size)
+            embedding = tf.sparse_tensor_dense_matmul(sparse_vocab_logits, self.embedding_weights)
+            # embedding (batch_size, seq_length, embed_size)
+            embedding = tf.reshape(embedding, (batch_size, seq_length, rnn_size))
+            return embedding
+        else:
+            vocab_logits = tf.reshape(maximum_indices, (batch_size, seq_length))
+            return vocab_logits
 
 class ClassificationSparseSoftmaxLoss(keras.layers.Layer):
     def __init__(self, **kwargs):
@@ -217,8 +224,12 @@ class ClassificationSparseSoftmaxLoss(keras.layers.Layer):
         return tf.identity(tf.reduce_sum(weights * loss) / num_labels(weights), name='classification_xentropy')
 
 def accuracy(logits, labels, weights):
-    eq = tf.cast(tf.equal(tf.argmax(logits, 1), labels), tf.float32)
-    acc = tf.identity(tf.reduce_sum(weights * eq) / num_labels(weights), name='accuracy')
+    if logits.get_shape().as_list()[-1] == 1:
+        eq = tf.cast(tf.equal(tf.round(logits), labels), tf.float32)
+        acc = tf.identity(tf.reduce_sum(weights * eq) / num_labels(weights), name='accuracy')
+    else:
+        eq = tf.cast(tf.equal(tf.argmax(logits, 1), labels), tf.float32)
+        acc = tf.identity(tf.reduce_sum(weights * eq) / num_labels(weights), name='accuracy')
     return acc
 
 def num_labels(weights):

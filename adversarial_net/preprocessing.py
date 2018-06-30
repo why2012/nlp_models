@@ -602,7 +602,7 @@ class WordCounter(object):
 		return documents_indices
 
 	# indices to words
-	def reverse(self, indices,  num_words = None, ignore_freq_than = 1000000000, wordsStat = None, return_list = False):
+	def reverse(self, indices, num_words = None, ignore_freq_than = 1000000000, wordsStat = None, return_list = False):
 		counts = self.default_counts
 		if num_words is None:
 			num_words = len(self.words_list) + self.default_counts_len

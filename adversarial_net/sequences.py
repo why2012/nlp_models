@@ -206,6 +206,14 @@ class RnnOutputToEmbedding(object):
             self.toEmbedding = layers.RnnOutputToEmbedding(vocab_size, embedding_weights, self.softmax_loss.lin_w, self.softmax_loss.lin_b, sampler)
             self.toEmbedding.build(input_shape=[-1, input_size])
 
+    @property
+    def only_logits(self):
+        return self.toEmbedding.only_logits
+
+    @only_logits.setter
+    def only_logits(self, bool_val):
+        self.toEmbedding.only_logits = bool_val
+
     def __call__(self, inputs):
         return self.toEmbedding(inputs)
 
@@ -243,7 +251,7 @@ class LanguageSequenceGenerator(object):
         self.lm_cell_state_size = lm_sszie if isinstance(lm_sszie, tuple) else (lm_sszie,)
         self.toEmbedding = rnnOutputToEmbedding
 
-    def __call__(self, content_initial_states, topic_initial_states, step_one_inputs, seq_length, keep_prob = 1.):
+    def __call__(self, content_initial_states, topic_initial_states, step_one_inputs, seq_length, keep_prob = 1., return_vocab_index = False):
         time_steps = seq_length
         time = tf.constant(0, dtype='int32', name='time')
         output_tensor_array = tf.TensorArray(tf.float32)
@@ -265,9 +273,16 @@ class LanguageSequenceGenerator(object):
         content_outputs_embedding = self.toEmbedding(content_outputs)
         # topic_outputs (batch_size, time_steps, rnn_size)
         topic_outputs, _ = tf.nn.dynamic_rnn(self.lm_cell_state_size, content_outputs_embedding, initial_state=topic_initial_states)
-        # topic_outputs (batch_size, time_steps, embed_size)
-        topic_outputs = self.toEmbedding(topic_outputs)
-        return topic_outputs
+        if not return_vocab_index:
+            # topic_outputs (batch_size, time_steps, embed_size)
+            topic_outputs = self.toEmbedding(topic_outputs)
+            return topic_outputs
+        else:
+            # topic_outputs (batch_size, time_steps)
+            self.toEmbedding.only_logits = True
+            topic_outputs = self.toEmbedding(topic_outputs)
+            self.toEmbedding.only_logits = False
+            return topic_outputs
 
     def content_states(self, batch_size, dist = tf.random_uniform, distargs = {"minval": -1, "maxval": 1}):
         lstm_initial_state = tuple([tf.contrib.rnn.LSTMStateTuple(dist((batch_size, c_size), **distargs),
