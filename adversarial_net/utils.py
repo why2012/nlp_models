@@ -3,6 +3,7 @@ from collections import defaultdict
 import threading
 from multiprocessing import Lock
 import argparse
+from sys import argv as sysargv
 
 def getLogger(name=None):
     logger = logging.getLogger(name)
@@ -40,6 +41,14 @@ class ArgumentsBuilder(object):
             raise Exception("duplicate variable: %s" % name)
         if name in self.scope_arguments or name in self.scope_variables or name in self.scope_associations:
             raise Exception("name is conflict with scope: %s" % name)
+
+    def set_argument_value(self, name, value, scope = None):
+        value = str(value)
+        if scope:
+            arg_name = "--{scope}_{name}".format(scope=scope, name=name)
+        else:
+            arg_name = "--{name}".format(name=name)
+        sysargv.extend([arg_name, value])
 
     def str2bool(self, v):
         if v == True:
@@ -149,7 +158,7 @@ class ArgumentsBuilder(object):
                         value = None
                 else:
                     value = self.__getitem__(self.associations[name], assoc_find=True)
-                if value:
+                if value is not None:
                     args[name[len(name_or_scope) + 1:]] = value
             for reg_name in self._registerd_variables:
                 if reg_name.startswith(name_or_scope) and reg_name not in self.scope_variables[name_or_scope]:

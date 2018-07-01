@@ -148,7 +148,7 @@ def construct_language_model_input_tensors(datapath, batch_size, unroll_steps):
                                       queue_class=tf.FIFOQueue)
     return dequeue_op
 
-def construct_language_model_input_tensor_with_state(datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False):
+def construct_language_model_input_tensor_with_state(datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False, **kwargs):
     def args_fn(datapack):
         X_train = datapack["X"]
         y_train = datapack["y"]
@@ -176,7 +176,7 @@ def construct_language_model_input_tensor_with_state(datapath, batch_size, unrol
 
     return construct_input_tensor_with_state(args_fn, datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, "language_model", bidrec)
 
-def construct_autoencoder_model_input_tensor_with_state(datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False):
+def construct_autoencoder_model_input_tensor_with_state(datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False, **kwargs):
     def args_fn(datapack):
         X_train = datapack["X"]
         y_train = datapack["y"]
@@ -204,7 +204,7 @@ def construct_autoencoder_model_input_tensor_with_state(datapath, batch_size, un
 
     return construct_input_tensor_with_state(args_fn, datapath, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, "autoencoder_model", bidrec)
 
-def construct_classification_model_input_tensor_with_state(datapath, phase, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False, count_examples = [0]):
+def construct_classification_model_input_tensor_with_state(datapath, phase, batch_size, unroll_steps, lstm_num_layers, state_size, dataset, bidrec = False, count_examples = [0], **kwargs):
     if phase == "train":
         X_name = "X_train"
         y_name = "y_train"

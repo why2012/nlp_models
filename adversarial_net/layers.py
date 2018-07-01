@@ -86,6 +86,8 @@ class LSTM(keras.layers.Layer):
               for _ in range(self.num_layers)
             ])
             cell.build(input_shape)
+            if not cell.trainable_variables:
+                cell(tf.random_uniform((1, input_shape[-1])), cell.zero_state(1, tf.float32))
             self.cell = cell
             if self.reuse is None:
                 self._trainable_weights = vs.global_variables()
@@ -188,7 +190,8 @@ class RnnOutputToEmbedding(keras.layers.Layer):
 
     def call(self, rnn_outputs):
         only_logits = self.only_logits
-        batch_size, seq_length, rnn_size = tf.shape(rnn_outputs)
+        rnn_outputs_shape = tf.shape(rnn_outputs)
+        batch_size, seq_length, rnn_size = rnn_outputs_shape[0], rnn_outputs_shape[1], rnn_outputs_shape[2]
         # rnn_output (batch_size * seq_length, rnn_size)
         rnn_outputs = tf.reshape(rnn_outputs, (-1, rnn_size))
         # vocab_logits (batch_size * seq_length, vocab_size)
@@ -196,16 +199,19 @@ class RnnOutputToEmbedding(keras.layers.Layer):
         if self.sampler:
             vocab_logits = self.sampler(vocab_logits)
         # maximum_indices (batch_size * seq_length,)
-        maximum_indices = tf.argmax(vocab_logits, -1)
+        maximum_indices = tf.argmax(vocab_logits, -1, output_type=tf.int32)
         if not only_logits:
             indices = tf.stack([tf.range(batch_size), maximum_indices], 1)
+            indices = tf.cast(indices, tf.int64)
             values = tf.gather_nd(vocab_logits, indices)
             # sparse_vocab_logits sparse(batch_size * seq_length, vocab_size)
-            sparse_vocab_logits = tf.SparseTensor(indices, values, tf.shape(vocab_logits))
+            sparse_vocab_logits = tf.SparseTensor(indices, values, tf.shape(vocab_logits, out_type=tf.int64))
             # embedding (batch_size * seq_length, embed_size)
             embedding = tf.sparse_tensor_dense_matmul(sparse_vocab_logits, self.embedding_weights)
             # embedding (batch_size, seq_length, embed_size)
-            embedding = tf.reshape(embedding, (batch_size, seq_length, rnn_size))
+            # print("----------", embedding)
+            embedding = tf.reshape(embedding, (batch_size, seq_length, self.embedding_weights.get_shape()[-1]))
+            # print("----------", embedding)
             return embedding
         else:
             vocab_logits = tf.reshape(maximum_indices, (batch_size, seq_length))

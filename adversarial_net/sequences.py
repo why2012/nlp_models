@@ -202,7 +202,7 @@ class RnnOutputToEmbedding(object):
     def __init__(self, var_scope_name, vocab_size, input_size, embedding_weights, sampler=None):
         with tf.variable_scope(var_scope_name):
             self.softmax_loss = layers.SoftmaxLoss(vocab_size=vocab_size)
-            self.softmax_loss.build([-1, input_size])
+            self.softmax_loss.build(([-1, input_size],))
             self.toEmbedding = layers.RnnOutputToEmbedding(vocab_size, embedding_weights, self.softmax_loss.lin_w, self.softmax_loss.lin_b, sampler)
             self.toEmbedding.build(input_shape=[-1, input_size])
 
@@ -252,27 +252,44 @@ class LanguageSequenceGenerator(object):
         self.toEmbedding = rnnOutputToEmbedding
 
     def __call__(self, content_initial_states, topic_initial_states, step_one_inputs, seq_length, keep_prob = 1., return_vocab_index = False):
+        # step_one_inputs (batch_size, embed_size)
+        # erase first dimension value for while-loop
+        embed_size = step_one_inputs.get_shape()[1].value
+        step_one_inputs_shape = tf.shape(step_one_inputs)
+        step_one_inputs = tf.reshape(step_one_inputs, (step_one_inputs_shape[0], step_one_inputs_shape[1]))
+        # step_one_inputs (None, embed_size)
+        step_one_inputs.set_shape((None, embed_size))
         time_steps = seq_length
         time = tf.constant(0, dtype='int32', name='time')
-        output_tensor_array = tf.TensorArray(tf.float32)
+        output_tensor_array = tf.TensorArray(tf.float32, size=time_steps)
         def step(time, output_ta_t, inputs, content_states):
+            # content_outputs (batch_size, rnn_size)
             content_outputs, content_states = self.ae_lstm_cell(inputs, content_states)
-            output_ta_t.write(time, content_outputs)
+            # content_outputs (batch_size, 1, rnn_size)
+            content_outputs = tf.expand_dims(content_outputs, 1)
+            # content_outputs (batch_size, embed_size)
+            content_outputs = tf.squeeze(self.toEmbedding(content_outputs), 1)
+            output_ta_t = output_ta_t.write(time, content_outputs)
             return time + 1, output_ta_t, content_outputs, content_states
+        # following steps
         final_outputs = tf.while_loop(cond=lambda time, *_: time < time_steps, body=step,
                                       loop_vars=(time, output_tensor_array, step_one_inputs, content_initial_states),
                                       parallel_iterations=32, swap_memory=True)
         output_tensor_array = final_outputs[1]
-        # content_outputs (time_steps, batch_size, rnn_size)
+        # content_outputs (time_steps, batch_size, embed_size)
         content_outputs = output_tensor_array.stack()
         # content_outputs (batch_size, time_steps, rnn_size)
         content_outputs = tf.transpose(content_outputs, [1, 0, 2])
         if keep_prob < 1.:
             content_outputs = tf.nn.dropout(content_outputs, keep_prob)
         # content_outputs_embedding (batch_size, time_steps, embed_size)
-        content_outputs_embedding = self.toEmbedding(content_outputs)
+        # content_outputs_embedding = self.toEmbedding(content_outputs)
+        content_outputs_embedding = content_outputs
         # topic_outputs (batch_size, time_steps, rnn_size)
-        topic_outputs, _ = tf.nn.dynamic_rnn(self.lm_cell_state_size, content_outputs_embedding, initial_state=topic_initial_states)
+        # print("--------", content_outputs_embedding)
+        # print("--------", content_initial_states)
+        # print("--------", topic_initial_states)
+        topic_outputs, _ = tf.nn.dynamic_rnn(self.lm_lstm_cell, content_outputs_embedding, initial_state=topic_initial_states)
         if not return_vocab_index:
             # topic_outputs (batch_size, time_steps, embed_size)
             topic_outputs = self.toEmbedding(topic_outputs)
@@ -310,9 +327,9 @@ class LanguageSequenceGenerator(object):
                 c_dist_values.append(c_value)
                 h_dist_values.append(h_value)
             # c_dist_tensor (batch_size, topic_count, rnn_size)
-            c_dist_tensor = tf.stack(c_dist_values, axis=1)
+            c_dist_tensor = tf.concat(c_dist_values, axis=1)
             # c_dist_tensor (batch_size, topic_count, rnn_size)
-            h_dist_tensor = tf.stack(h_dist_values, axis=1)
+            h_dist_tensor = tf.concat(h_dist_values, axis=1)
             # c_fused_dist_tensor (batch_size, rnn_size)
             c_fused_dist_tensor = tf.reduce_sum(c_dist_tensor * dist_fuse_w, axis=1)
             # h_fused_dist_tensor (batch_size, rnn_size)

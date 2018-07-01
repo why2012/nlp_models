@@ -21,14 +21,23 @@ modules={"EMBEDDING": "to_embedding", "FG_S": "fake_genuing_discriminator_seq2se
          "CL_LOSS": "classification_loss", "SEQ_G_LSTM": "generator_lstms", "SEQ_G": "sequence_generator"}
 
 class AdversarialDDGModel(BaseModel):
+    # stepA: fake_genuing_discriminator & generator
+    # stepB: pretrain topic_discriminator with genuing data
+    # stepC: use topic_discriminator to train topic_generator
+    # stepD: use topic_generator and genuing data to re-train topic_discriminator
     stepA_modules = ["EMBEDDING", "FG_S", "FG_D", "SEQ_G_LSTM", "SEQ_G"]
-    stepB_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS", "SEQ_G_LSTM", "SEQ_G"]
+    stepB_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS"]
+    stepC_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS", "SEQ_G_LSTM", "SEQ_G"]
+    stepD_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS", "SEQ_G_LSTM", "SEQ_G"]
+    eval_graph_modules = ["EMBEDDING", "SEQ_G_LSTM", "SEQ_G"]
+    eval_cl_modules = ["EMBEDDING", "T_S", "T_D", "CL_LOSS"]
     def __init__(self, use_average = False, init_modules=modules.keys()):
         super(AdversarialDDGModel, self).__init__(use_average=use_average)
         self._fit_kwargs = {}
         self.stepTag = "stepA"
         self.train_step_initialized = False
         self.train_step_vars = {}
+        self.feed_dict = {}
         modules_abbreviation = init_modules
         # EMBEDDING
         if "EMBEDDING" in modules_abbreviation:
@@ -37,7 +46,7 @@ class AdversarialDDGModel(BaseModel):
                 embedding_dim=self.arguments["lm_sequence"]["embedding_dim"],
                 vocab_freqs=self.arguments["vocab_freqs"],
                 normalize=True,
-                keep_embed_prob=self.arguments["keep_embed_prob"])
+                keep_embed_prob=self.arguments["lm_sequence"]["keep_embed_prob"])
         # FG_S
         if "FG_S" in modules_abbreviation:
             self.fake_genuing_discriminator_seq2seq = seq.Seq2SeqSequence(
@@ -118,6 +127,7 @@ class AdversarialDDGModel(BaseModel):
         content_initial_states = self.sequence_generator.content_states(batch_size_tensor)
         # dist_fuse_w_y (batch_size,) range(0, topic_count)
         dist_fuse_w_y = tf.round(tf.random_uniform((batch_size_tensor,), minval=0, maxval=topic_count - 1))
+        dist_fuse_w_y = tf.cast(dist_fuse_w_y, tf.int32)
         # dist_fuse_w (batch_size, topic_count)
         dist_fuse_w = tf.one_hot(dist_fuse_w_y, depth=topic_count)
         distargs = []
@@ -368,7 +378,7 @@ class AdversarialDDGModel(BaseModel):
     # stepB: pretrain topic_discriminator with genuing data
     # stepC: use topic_discriminator to train topic_generator
     # stepD: use topic_generator and genuing data to re-train topic_discriminator
-    def build(self, stepA = True, stepB = False, stepC = False, stepD = False, eval_seq = False, eval_cl = False, **kwargs):
+    def build(self, stepA = False, stepB = False, stepC = False, stepD = False, eval_seq = False, eval_cl = False, **kwargs):
         variables = {}
         savers = {}
         losses = {}
@@ -455,7 +465,7 @@ class AdversarialDDGModel(BaseModel):
         for tag, seq in relevent_sequences.items():
             pretrain_restorer = seq.pretrain_restorer
             if pretrain_restorer:
-                savers[tag] = seq.pretrain_restorer
+                savers[tag] = pretrain_restorer
 
         self.optimize(max_grad_norm=self.arguments["max_grad_norm"], lr=self.arguments["lr"], lr_decay=self.arguments["lr_decay"])
 
@@ -603,10 +613,10 @@ class AdversarialDDGModel(BaseModel):
             acc_ops=acc_ops, save_model_path=save_model_path, max_steps=max_steps)
 
     def eval(self, save_model_path):
-        model_phase = 1 if self.arguments["phase"] in ["train"] else 0
-        self.feed_dict[tf.keras.backend.learning_phase()] = model_phase
+        self.feed_dict[tf.keras.backend.learning_phase()] = 0
         eval_graph = self._fit_kwargs["eval_graph"]
         with tf.Session() as sess:
+            sess.run(tf.global_variables_initializer())
             coodinator = tf.train.Coordinator()
             threads = tf.train.start_queue_runners(sess, coodinator)
             self._resotre_training_model(sess=sess, save_model_path=save_model_path)
@@ -622,6 +632,7 @@ class AdversarialDDGModel(BaseModel):
                     logger.info("doc wordss: %s" % doc)
                     logger.info("-" * 100)
             elif self.stepTag == "eval_cl":
+                assert self.arguments["eval_count_examples"] != -1, "--eval_count_examples must be set"
                 num_batches = int(np.ceil(self.arguments["eval_count_examples"] / self.arguments["batch_size"]))
                 acc_op = eval_graph["acc_op"]
                 current_acc_val = -1
