@@ -134,7 +134,7 @@ class BaseModel(object):
             grads = tf.gradients(loss, need_clip_vars)
             clipped_grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
             grads_and_vars.extend(list(zip(clipped_grads, need_clip_vars)))
-        return grads_and_vars.extend
+        return grads_and_vars
 
     def _trainable_variables_filter(self, filter_func, vars_list = None):
         return list(filter(filter_func, tf.trainable_variables() if vars_list is None else vars_list))
@@ -235,11 +235,12 @@ class BaseModel(object):
             for key, value in debug_results:
                 logger.info("Debug [%s] eval results: %s" % (key, value))
         if self.debug_trace and global_step_val % self.arguments["eval_steps"] == 0 and run_metadata:
-            if isinstance(run_metadata, list):
-                for i, metadata in enumerate(run_metadata):
-                    summary_writer.add_run_metadata(metadata, "%d-step-%d" % (i, global_step_val))
-            else:
-                summary_writer.add_run_metadata(run_metadata, "step-%d" % global_step_val)
+            if summary_writer is not None:
+                if isinstance(run_metadata, list):
+                    for i, metadata in enumerate(run_metadata):
+                        summary_writer.add_run_metadata(metadata, "%d-step-%d" % (i, global_step_val))
+                else:
+                    summary_writer.add_run_metadata(run_metadata, "step-%d" % global_step_val)
             if self.timeline_dir:
                 if isinstance(run_metadata, list):
                     for i, metadata in enumerate(run_metadata):
@@ -252,7 +253,8 @@ class BaseModel(object):
                     chrome_trace = fetched_timeline.generate_chrome_trace_format()
                     with open(osp.join(self.timeline_dir, '%s_timeline_step_%d.json' % (self.model_name, global_step_val)), 'w') as f:
                         f.write(chrome_trace)
-        summary_writer.add_summary(summary, global_step_val)
+        if summary_writer is not None:
+            summary_writer.add_summary(summary, global_step_val)
 
     def _eval_step(self, global_step_val, max_steps, loss_val, acc_val = -1, duration = -1):
         if global_step_val % self.arguments["eval_steps"] == 0:
@@ -277,7 +279,9 @@ class BaseModel(object):
 
     def _initialize_process(self, sess, save_model_path):
         model_saver = tf.train.Saver(max_to_keep=1)
-        summary_writer = tf.summary.FileWriter(osp.dirname(save_model_path), sess.graph)
+        summary_writer = None
+        if save_model_path is not None:
+            summary_writer = tf.summary.FileWriter(osp.dirname(save_model_path), sess.graph)
         merged_summary = tf.summary.merge_all()
         sess.run(tf.global_variables_initializer())
         current_steps = sess.run(self.global_step)

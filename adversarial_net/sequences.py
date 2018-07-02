@@ -342,6 +342,10 @@ class LanguageSequenceGenerator(object):
                                               state_size, lstm_num_layers, bidrec=False):
         indice_tensor = tf.Variable(0, trainable=False)
         indice_tensor = tf.assign_add(indice_tensor, 1, use_locking=True)
+        # dereference indice_tensor, int32_ref -> int32
+        # indice_tensor = tf.identity(indice_tensor)
+        # cast int32 to string
+        indice_tensor = tf.py_func(lambda x: str(x), [indice_tensor], tf.string)
         initial_states = {}
         for i in range(lstm_num_layers):
             c_state_name = "{}_lstm_c".format(i)
