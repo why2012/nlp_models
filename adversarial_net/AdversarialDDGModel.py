@@ -3,6 +3,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 import tensorflow as tf
 import numpy as np
+import time
 from adversarial_net.engine import BaseModel
 from adversarial_net import arguments as flags
 from adversarial_net import sequences as seq
@@ -275,25 +276,34 @@ class AdversarialDDGModel(BaseModel):
         return classification_accuracy, update_op
 
     def build_fake_genuing_discriminator(self, LAMBDA = 10):
+        batch_size_val = self.arguments["inputs"]["batch_size"]
+        unroll_step_val = self.arguments["inputs"]["unroll_steps"]
+        num_classes_val = self.arguments["adv_cl_sequence"]["num_classes"]
         g_get_lstm_state, g_save_lstm_state, g_embedding, g_y_tensor, g_weight_tensor, g_eos_indicators, g_seq_length, g_laststep_gather_indices = self.get_genuing_inputs()
-        s_get_lstm_state, s_save_lstm_state, s_embedding, s_y_tensor, s_weight_tensor, s_eos_indicators, s_seq_length, s_laststep_gather_indices = self.get_synthesize_inputs()
-        def get_interpolated_states_fn(alpha, g_get_lstm_state, s_get_lstm_state):
-            def get_states_fn(alpha=alpha):
-                alpha = tf.squeeze(alpha)
-                lstm_initial_state = []
-                g_lstm_initial_state = g_get_lstm_state()
-                s_lstm_initial_state = s_get_lstm_state()
-                for g_lstm_tuple, s_lstm_tuple in zip(g_lstm_initial_state, s_lstm_initial_state):
-                    g_c = g_lstm_tuple.c
-                    s_c = s_lstm_tuple.c
-                    g_h = g_lstm_tuple.h
-                    s_h = s_lstm_tuple.h
-                    c = g_c + alpha * (s_c - g_c)
-                    h = g_h + alpha * (s_h - g_h)
-                    lstm_initial_state.append(tf.contrib.rnn.LSTMStateTuple(c, h))
-                lstm_initial_state = tuple(lstm_initial_state)
-                return lstm_initial_state
-            return get_states_fn
+        g_weight_tensor = tf.ones(tf.shape(g_weight_tensor))
+        # s_get_lstm_state, s_save_lstm_state, s_embedding, s_y_tensor, s_weight_tensor, s_eos_indicators, s_seq_length, s_laststep_gather_indices = self.get_synthesize_inputs()
+        s_embedding, s_y_tensor, s_weight_tensor, s_eos_indicators, s_seq_length = self.generate_synthesize_inputs(unroll_step_val, batch_size_val, num_classes_val)
+        s_laststep_gather_indices = tf.stack([tf.range(tf.shape(s_embedding)[0]), s_seq_length - 1], 1)
+        def get_zeros_lstm_state():
+            return self.fake_genuing_discriminator_seq2seq.lstm_layer.cell.zero_state(batch_size_val, tf.float32)
+        s_get_lstm_state = get_interpolated_states_fn = get_zeros_lstm_state
+        # def get_interpolated_states_fn(alpha, g_get_lstm_state, s_get_lstm_state):
+        #     def get_states_fn(alpha=alpha):
+        #         alpha = tf.squeeze(alpha)
+        #         lstm_initial_state = []
+        #         g_lstm_initial_state = g_get_lstm_state()
+        #         s_lstm_initial_state = s_get_lstm_state()
+        #         for g_lstm_tuple, s_lstm_tuple in zip(g_lstm_initial_state, s_lstm_initial_state):
+        #             g_c = g_lstm_tuple.c
+        #             s_c = s_lstm_tuple.c
+        #             g_h = g_lstm_tuple.h
+        #             s_h = s_lstm_tuple.h
+        #             c = g_c + alpha * (s_c - g_c)
+        #             h = g_h + alpha * (s_h - g_h)
+        #             lstm_initial_state.append(tf.contrib.rnn.LSTMStateTuple(c, h))
+        #         lstm_initial_state = tuple(lstm_initial_state)
+        #         return lstm_initial_state
+        #     return get_states_fn
         # logits (batch_size, 1)
         genuing_logits, genuing_final_states = self.compute_d_logits(g_embedding, g_seq_length,
                                                                      g_laststep_gather_indices, g_get_lstm_state,
@@ -307,28 +317,32 @@ class AdversarialDDGModel(BaseModel):
         discriminator_loss = tf.reduce_mean(fake_logits) - tf.reduce_mean(genuing_logits)
         generator_loss = -tf.reduce_mean(fake_logits)
         # accs
-        discriminator_genuing_y = tf.ones((tf.shape(genuing_logits)[0],))
+        normalized_genuing_logits = tf.clip_by_value(genuing_logits, 0, 1)
+        normalized_fake_logits = tf.clip_by_value(fake_logits, 0, 1)
+        discriminator_genuing_y = tf.ones((tf.shape(normalized_genuing_logits)[0],))
         discriminator_genuing_w = tf.gather_nd(g_weight_tensor, g_laststep_gather_indices)
-        discriminator_genuing_acc = layers.accuracy(genuing_logits, discriminator_genuing_y, discriminator_genuing_w)
-        discriminator_fake_y = tf.zeros((tf.shape(fake_logits)[0],))
+        discriminator_genuing_acc = layers.accuracy(normalized_genuing_logits, discriminator_genuing_y, discriminator_genuing_w)
+        discriminator_fake_y = tf.zeros((tf.shape(normalized_fake_logits)[0],))
         discriminator_fake_w = tf.gather_nd(s_weight_tensor, s_laststep_gather_indices)
-        discriminator_fake_acc = layers.accuracy(fake_logits, discriminator_fake_y, discriminator_fake_w)
-        d_total_logits = tf.concat([genuing_logits, fake_logits], 0)
+        discriminator_fake_acc = layers.accuracy(normalized_fake_logits, discriminator_fake_y, discriminator_fake_w)
+        d_total_logits = tf.concat([normalized_genuing_logits, normalized_fake_logits], 0)
         d_total_y = tf.concat([discriminator_genuing_y, discriminator_fake_y], 0)
         d_total_w = tf.concat([discriminator_genuing_w, discriminator_fake_w], 0)
         discriminator_total_acc = layers.accuracy(d_total_logits, d_total_y, d_total_w)
-        tf.summary.scalar("discriminator_genuing_acc", discriminator_genuing_acc)
-        tf.summary.scalar("discriminator_fake_acc", discriminator_fake_acc)
-        tf.summary.scalar("discriminator_total_acc", discriminator_total_acc)
+        tf.summary.scalar("discriminator_genuing_acc", discriminator_genuing_acc, collections=[tf.GraphKeys.SUMMARIES, "discriminator"])
+        tf.summary.scalar("discriminator_fake_acc", discriminator_fake_acc, collections=[tf.GraphKeys.SUMMARIES, "generator"])
+        tf.summary.scalar("discriminator_total_acc", discriminator_total_acc, collections=[tf.GraphKeys.SUMMARIES, "discriminator"])
         # WGAN lipschitz-penalty
         alpha = tf.random_uniform(shape=[tf.shape(g_embedding)[0], 1, 1], minval=0., maxval=1.)
         differences = s_embedding - g_embedding
         interpolates = g_embedding + (alpha * differences)
         i_seq_length = tf.maximum(g_seq_length, s_seq_length)
         i_laststep_gather_indices = tf.stack([tf.range(tf.shape(interpolates)[0]), i_seq_length - 1], 1)
-        interpolates_logits, interpolates_final_states = self.compute_d_logits(interpolates, s_seq_length, i_laststep_gather_indices,
-                                                          get_interpolated_states_fn(alpha, g_get_lstm_state, s_get_lstm_state),
-                                                          self.fake_genuing_discriminator_seq2seq, self.fake_genuing_discriminator_dense)
+        interpolates_logits, interpolates_final_states = self.compute_d_logits(interpolates, s_seq_length,
+                                                                               i_laststep_gather_indices,
+                                                                               get_interpolated_states_fn,
+                                                                               self.fake_genuing_discriminator_seq2seq,
+                                                                               self.fake_genuing_discriminator_dense)
         interpolates_cost = tf.reduce_mean(interpolates_logits)
         gradients = tf.gradients(interpolates_cost, [interpolates])[0]
         gradients = tf.stop_gradient(gradients)
@@ -336,13 +350,16 @@ class AdversarialDDGModel(BaseModel):
         gradient_penalty = tf.reduce_mean((slopes - 1.) ** 2)
         discriminator_loss += LAMBDA * gradient_penalty
         # save_lstm_state
-        with tf.control_dependencies([g_save_lstm_state(genuing_final_states), s_save_lstm_state(fake_final_states)]):
+        with tf.control_dependencies([g_save_lstm_state(get_zeros_lstm_state())]):
             discriminator_loss = tf.identity(discriminator_loss)
-            generator_loss = tf.identity(generator_loss)
         return discriminator_loss, generator_loss, [discriminator_genuing_acc, discriminator_fake_acc, discriminator_total_acc]
 
-    def build_topic_discriminator(self, genuing_discriminator = False, fake_discriminator = False):
+    # fake_use_batched_sequence stepD
+    def build_topic_discriminator(self, genuing_discriminator = False, fake_discriminator = False, fake_use_batched_sequence = False):
         return_cache = []
+        batch_size_val = self.arguments["inputs"]["batch_size"]
+        unroll_step_val = self.arguments["inputs"]["unroll_steps"]
+        num_classes_val = self.arguments["adv_cl_sequence"]["num_classes"]
         if genuing_discriminator:
             g_get_lstm_state, g_save_lstm_state, g_embedding, g_y_tensor, g_weight_tensor, g_eos_indicators, g_seq_length, g_laststep_gather_indices = self.get_genuing_inputs()
             # losses
@@ -365,23 +382,33 @@ class AdversarialDDGModel(BaseModel):
             return_cache.append(genuing_total_loss)
             return_cache.append(genuing_cl_acc)
         if fake_discriminator:
-            s_get_lstm_state, s_save_lstm_state, s_embedding, s_y_tensor, s_weight_tensor, s_eos_indicators, s_seq_length, s_laststep_gather_indices = self.get_synthesize_inputs()
+            if fake_use_batched_sequence:
+                s_get_lstm_state, s_save_lstm_state, s_embedding, s_y_tensor, s_weight_tensor, s_eos_indicators, s_seq_length, s_laststep_gather_indices = self.get_synthesize_inputs()
+            else:
+                s_embedding, s_y_tensor, s_weight_tensor, s_eos_indicators, s_seq_length = self.generate_synthesize_inputs(unroll_step_val, batch_size_val, num_classes_val)
+                s_laststep_gather_indices = tf.stack([tf.range(tf.shape(s_embedding)[0]), s_seq_length - 1], 1)
+                def s_get_lstm_state():
+                    return self.topic_discriminator_seq2seq.lstm_layer.cell.zero_state(batch_size_val,  tf.float32)
+                s_save_lstm_state = None
             fake_cl_loss, fake_final_states, fake_cl_logits = self.compute_cl_loss(s_embedding, s_y_tensor, s_weight_tensor, s_seq_length,
                                                                                    s_laststep_gather_indices, s_get_lstm_state,
                                                                                    self.topic_discriminator_seq2seq, self.topic_discriminator_dense,
                                                                                    return_logits=True)
-            fake_adv_loss = self.compute_adv_loss(fake_cl_loss, s_embedding, s_y_tensor, s_weight_tensor,
-                                                     s_seq_length, s_laststep_gather_indices, s_get_lstm_state,
-                                                     self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
-            fake_total_loss = fake_cl_loss + fake_adv_loss
-            fake_cl_acc = layers.accuracy(fake_cl_logits, s_y_tensor, tf.gather_nd(s_weight_tensor, s_laststep_gather_indices))
-            # no need to evaluate adv_loss when training generator
             if genuing_discriminator:
+                fake_adv_loss = self.compute_adv_loss(fake_cl_loss, s_embedding, s_y_tensor, s_weight_tensor,
+                                                         s_seq_length, s_laststep_gather_indices, s_get_lstm_state,
+                                                         self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
+                fake_total_loss = fake_cl_loss + fake_adv_loss
+                # no need to evaluate adv_loss when training generator
                 tf.summary.scalar('fake_adv_loss', fake_adv_loss)
+            else:
+                fake_total_loss = fake_cl_loss
+            fake_cl_acc = layers.accuracy(fake_cl_logits, s_y_tensor, tf.gather_nd(s_weight_tensor, s_laststep_gather_indices))
             tf.summary.scalar('fake_cl_acc', fake_cl_acc)
-            with tf.control_dependencies([s_save_lstm_state(fake_final_states)]):
-                fake_cl_loss = tf.identity(fake_cl_loss)
-                fake_total_loss = tf.identity(fake_total_loss)
+            if fake_use_batched_sequence:
+                with tf.control_dependencies([s_save_lstm_state(fake_final_states)]):
+                    fake_cl_loss = tf.identity(fake_cl_loss)
+                    fake_total_loss = tf.identity(fake_total_loss)
             return_cache.append(fake_cl_loss)
             return_cache.append(fake_total_loss)
             return_cache.append(fake_cl_acc)
@@ -438,6 +465,7 @@ class AdversarialDDGModel(BaseModel):
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss,
                                   "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
+            variables["fake_cl_loss"] = []
             variables["fake_cl_loss"] += relevent_sequences["SEQ_G_LSTM"].trainable_weights
             variables["fake_cl_loss"] += relevent_sequences["SEQ_G"].trainable_weights
             accs["fake_cl_acc"] = fake_cl_acc
@@ -490,13 +518,11 @@ class AdversarialDDGModel(BaseModel):
     def optimize(self, max_grad_norm, lr, lr_decay):
         def _optimize(loss, variables, train_op_name, exclude_op_names = []):
             grads_and_vars = self._get_and_clip_grads_by_variables(loss, variables, max_grad_norm, exclude_op_names=exclude_op_names)
-            if train_op_name == "generator":
-                print(grads_and_vars)
             global_step = tf.Variable(0, trainable=False, name="%s_global_step" % train_op_name)
             setattr(self, "%s_global_step" % train_op_name, global_step)
             train_op, train_op_lr = self._get_train_op_with_lr_decay(grads_and_vars, global_step, lr=lr, lr_decay=lr_decay)
-            tf.summary.scalar('%s_learning_rate' % train_op_name, train_op_lr)
-            tf.summary.scalar('%s_loss' % train_op_name, loss)
+            tf.summary.scalar('%s_learning_rate' % train_op_name, train_op_lr, collections=[tf.GraphKeys.SUMMARIES, train_op_name])
+            tf.summary.scalar('%s_loss' % train_op_name, loss, collections=[tf.GraphKeys.SUMMARIES, train_op_name])
             if self.use_average:
                 train_op = self._moving_average_wrapper(train_op, variables, global_step)
             return train_op
@@ -527,10 +553,11 @@ class AdversarialDDGModel(BaseModel):
                 train_ops["discriminator_train_op"] = discriminator_train_op
 
     def restore_pretrained_variables(self, sess, save_model_path, pretrain_model_pathes):
-        savers = self._fit_kwargs["savers"]
-        for tag, saver in savers.items():
-            pretrained_model_path = pretrain_model_pathes[tag]
-            self._restore_pretained_variables(sess, pretrained_model_path, variables_to_restore = None, save_model_path = osp.dirname(save_model_path), saver_for_restore = saver)
+        if pretrain_model_pathes:
+            savers = self._fit_kwargs["savers"]
+            for tag, saver in savers.items():
+                pretrained_model_path = pretrain_model_pathes[tag]
+                self._restore_pretained_variables(sess, pretrained_model_path, variables_to_restore = None, save_model_path = osp.dirname(save_model_path), saver_for_restore = saver)
 
     def run_training_stepA(self, sess, save_model_path, max_steps, critic_iters = 10):
         losses = self._fit_kwargs["losses"]
@@ -543,28 +570,33 @@ class AdversarialDDGModel(BaseModel):
         discriminator_genuing_acc = accs["discriminator_genuing_acc"]
         discriminator_fake_acc = accs["discriminator_fake_acc"]
         discriminator_total_acc = accs["discriminator_total_acc"]
-        acc_ops = {"d_genuing_acc": discriminator_genuing_acc,
-                   "d_fake_acc": discriminator_fake_acc,
-                   "d_total_acc": discriminator_total_acc}
+        acc_ops_fake = {"d_fake_acc": discriminator_fake_acc}
+        acc_ops_genuing = {"d_genuing_acc": discriminator_genuing_acc, "d_total_acc": discriminator_total_acc}
         discriminator_run_options, discriminator_run_metadata = self._pretrain_step(self.global_step_val)
         generator_run_options, generator_run_metadata = self._pretrain_step(self.global_step_val)
+        merged_summary_generator = self.train_step_vars["merged_summary_generator"]
+        merged_summary_discriminator = self.train_step_vars["merged_summary_discriminator"]
         start_time = time.time()
-        _, generator_loss_val, self.global_step_val, summary, acc_vals = sess.run([generator_train_op, generator_loss, self.generator_global_step,
-                                                                                 self.train_step_vars["merged_summary"], acc_ops],
-                                                                                 feed_dict=self.feed_dict,
-                                                                                 options=generator_run_options,
-                                                                                 run_metadata=generator_run_metadata)
+        _, generator_loss_val, self.global_step_val, summary_generator, acc_ops_fake_val = sess.run([generator_train_op, generator_loss, self.generator_global_step,
+                                                                                                     merged_summary_generator, acc_ops_fake],
+                                                                                                     feed_dict=self.feed_dict,
+                                                                                                     options=generator_run_options,
+                                                                                                     run_metadata=generator_run_metadata)
         discriminator_loss_val = -1
+        acc_ops_genuing_val = {}
+        summary_discriminator = None
         for _ in range(critic_iters):
-            _, discriminator_loss_val = sess.run([discriminator_train_op, discriminator_loss],
-                                                 feed_dict=self.feed_dict,
-                                                 options=discriminator_run_options,
-                                                 run_metadata=discriminator_run_metadata)
+            _, discriminator_loss_val, acc_ops_genuing_val, summary_discriminator = sess.run([discriminator_train_op, discriminator_loss, acc_ops_genuing,
+                                                                                              merged_summary_discriminator],
+                                                                                              feed_dict=self.feed_dict,
+                                                                                              options=discriminator_run_options,
+                                                                                              run_metadata=discriminator_run_metadata)
+        acc_vals = {}; acc_vals.update(acc_ops_fake_val); acc_vals.update(acc_ops_genuing_val)
         duration = time.time() - start_time
         if generator_loss_val < self.train_step_vars["best_loss_val"]:
             self.train_step_vars["best_loss_val"] = generator_loss_val
-        self._summary_step(debug_tensors=self.debug_tensors, global_step_val=self.global_step_val,
-                           summary_writer=self.train_step_vars["summary_writer"], summary=summary,
+        self._summary_step(sess=sess, debug_tensors=self.debug_tensors, global_step_val=self.global_step_val,
+                           summary_writer=self.train_step_vars["summary_writer"], summary=[summary_generator, summary_discriminator],
                            run_metadata=[discriminator_run_metadata, generator_run_metadata],
                            feed_dict=self.feed_dict)
         self._eval_step(self.global_step_val, max_steps,
@@ -585,7 +617,7 @@ class AdversarialDDGModel(BaseModel):
         duration = time.time() - start_time
         if loss_val < self.train_step_vars["best_loss_val"]:
             self.train_step_vars["best_loss_val"] =loss_val
-        self._summary_step(debug_tensors=self.debug_tensors, global_step_val=self.global_step_val,
+        self._summary_step(sess=sess, debug_tensors=self.debug_tensors, global_step_val=self.global_step_val,
                            summary_writer=self.train_step_vars["summary_writer"], summary=summary,
                            run_metadata=run_metadata, feed_dict=self.feed_dict)
         self._eval_step(self.global_step_val, max_steps,
@@ -599,7 +631,7 @@ class AdversarialDDGModel(BaseModel):
         losses = self._fit_kwargs["losses"]
         train_ops = self._fit_kwargs["train_ops"]
         accs = self._fit_kwargs["accs"]
-        discriminator_loss = losses["discriminator_loss"]
+        discriminator_loss = losses["genuing_total_loss"]
         discriminator_train_op = train_ops["discriminator_train_op"]
         acc_ops = accs
         return self.single_loss_train_step(
@@ -682,7 +714,9 @@ class AdversarialDDGModel(BaseModel):
             max_steps = self.arguments["max_steps"] + current_steps
             while self.global_step_val < max_steps:
                 if self.stepTag == "stepA":
-                    loss_val = self.run_training_stepA(sess, save_model_path, max_steps)
+                    self.train_step_vars["merged_summary_discriminator"] = tf.summary.merge_all(key="discriminator")
+                    self.train_step_vars["merged_summary_generator"] = tf.summary.merge_all(key="generator")
+                    loss_val = self.run_training_stepA(sess, save_model_path, max_steps, critic_iters=self.arguments["gan"]["critic_iters"])
                 elif self.stepTag == "stepB":
                     loss_val = self.run_training_stepB(sess, save_model_path, max_steps)
                 elif self.stepTag == "stepC":

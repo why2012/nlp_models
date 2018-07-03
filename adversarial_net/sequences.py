@@ -113,6 +113,10 @@ class AdversarialLoss(object):
         return norm_length * x_unit
 
     @property
+    def trainable_weights(self):
+        return []
+
+    @property
     def pretrain_weights(self):
         return []
 
@@ -164,6 +168,10 @@ class VirtualAdversarialLoss(AdversarialLoss):
         num_labels = tf.where(tf.equal(num_labels, 0.), 1., _num_labels)
         loss = tf.identity(tf.reduce_sum(weights * kl) / num_labels, name='kl_loss')
         return loss
+
+    @property
+    def trainable_weights(self):
+        return []
 
     @property
     def pretrain_weights(self):

@@ -201,7 +201,7 @@ class RnnOutputToEmbedding(keras.layers.Layer):
         # maximum_indices (batch_size * seq_length,)
         maximum_indices = tf.argmax(vocab_logits, -1, output_type=tf.int32)
         if not only_logits:
-            indices = tf.stack([tf.range(batch_size), maximum_indices], 1)
+            indices = tf.stack([tf.range(batch_size * seq_length), maximum_indices], 1)
             indices = tf.cast(indices, tf.int64)
             values = tf.gather_nd(vocab_logits, indices)
             # sparse_vocab_logits sparse(batch_size * seq_length, vocab_size)
@@ -231,10 +231,12 @@ class ClassificationSparseSoftmaxLoss(keras.layers.Layer):
 
 def accuracy(logits, labels, weights):
     if logits.get_shape().as_list()[-1] == 1:
+        logits = tf.squeeze(logits)
         eq = tf.cast(tf.equal(tf.round(logits), labels), tf.float32)
         acc = tf.identity(tf.reduce_sum(weights * eq) / num_labels(weights), name='accuracy')
     else:
-        eq = tf.cast(tf.equal(tf.argmax(logits, 1), labels), tf.float32)
+        assert labels.dtype in [tf.int32, tf.int64], "labels.dtype must in [int32, int64]"
+        eq = tf.cast(tf.equal(tf.argmax(logits, 1, output_type=labels.dtype), labels), tf.float32)
         acc = tf.identity(tf.reduce_sum(weights * eq) / num_labels(weights), name='accuracy')
     return acc
 

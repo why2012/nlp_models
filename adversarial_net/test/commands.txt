@@ -1,0 +1,3 @@
+python adversarial_net\test\seq_generator_test.py --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb --max_steps 10 --eval_steps 1 --inputs_batch_size 50
+python adversarial_net\test\seq_generator_test.py --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb --max_steps 10 --eval_steps 1 --inputs_batch_size 50 --eval_acc
+python adversarial_net\test\seq_generator_test.py --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb --max_steps 15 --eval_steps 1 --inputs_batch_size 1 --eval_acc

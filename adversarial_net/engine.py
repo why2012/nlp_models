@@ -52,6 +52,8 @@ def configure():
     flags.add_argument(scope="vir_adv_loss", name="num_power_iteration", argtype=int, default=1)
     flags.add_argument(scope="vir_adv_loss", name="small_constant_for_finite_diff", argtype=float, default=1e-1)
 
+    flags.add_argument(scope="gan", name="critic_iters", argtype=int, default=5)
+
     flags.add_argument(name="phase", argtype=str, default="train")
     flags.add_argument(name="max_grad_norm", argtype=float, default=1.0)
     flags.add_argument(name="lr", argtype=float, default=1e-3)
@@ -227,7 +229,7 @@ class BaseModel(object):
                                                              run_metadata=run_metadata)
         return loss_val, global_step_val, summary, acc_val
 
-    def _summary_step(self, debug_tensors, global_step_val, summary_writer, summary, run_metadata = None, feed_dict = None):
+    def _summary_step(self, sess, debug_tensors, global_step_val, summary_writer, summary, run_metadata = None, feed_dict = None):
         if debug_tensors:
             # note that different batch is used when queue is involved in graph
             debug_results = sess.run(list(debug_tensors.values()), feed_dict=feed_dict)
@@ -253,8 +255,12 @@ class BaseModel(object):
                     chrome_trace = fetched_timeline.generate_chrome_trace_format()
                     with open(osp.join(self.timeline_dir, '%s_timeline_step_%d.json' % (self.model_name, global_step_val)), 'w') as f:
                         f.write(chrome_trace)
-        if summary_writer is not None:
-            summary_writer.add_summary(summary, global_step_val)
+        if summary_writer is not None and summary:
+            if isinstance(summary, list):
+                for summary_item in summary:
+                    summary_writer.add_summary(summary_item, global_step_val)
+            else:
+                summary_writer.add_summary(summary, global_step_val)
 
     def _eval_step(self, global_step_val, max_steps, loss_val, acc_val = -1, duration = -1):
         if global_step_val % self.arguments["eval_steps"] == 0:
