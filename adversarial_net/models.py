@@ -17,11 +17,12 @@ EOS_TAG = 2
 
 class LanguageModel(BaseModel):
     def __init__(self, use_average = False, lock_embedding = False):
+        self.lock_embedding = lock_embedding
         super(LanguageModel, self).__init__(use_average=use_average)
         logger.info("constructing language model dataset...")
         self.inputs, self.get_lstm_state, self.save_lstm_state = construct_language_model_input_tensor_with_state(**self.arguments["lm_inputs"])
         logger.info("language model dataset is constructed.")
-        self.sequences["lm_sequence"] = seq.LanguageModelSequence(lock_embedding=lock_embedding, **self.arguments["lm_sequence"])
+        self.sequences["lm_sequence"] = seq.LanguageModelSequence(**self.arguments["lm_sequence"])
         self.loss_layer = layers.SoftmaxLoss(**self.arguments["lm_loss"])
         self.train_op = None
         self.loss = None
@@ -44,7 +45,7 @@ class LanguageModel(BaseModel):
         with tf.control_dependencies([self.save_lstm_state(final_state)]):
             self.loss = tf.identity(self.loss)
         self.train_op = self.optimize(self.loss, self.arguments["max_grad_norm"],
-                                      self.arguments["lr"], self.arguments["lr_decay"])
+                                      self.arguments["lr"], self.arguments["lr_decay"], lock_embedding=self.lock_embedding)
         super(LanguageModel, self).build()
 
     def fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None):
@@ -56,12 +57,13 @@ class LanguageModel(BaseModel):
 
 class AutoEncoderModel(BaseModel):
     def __init__(self, use_average = False, lock_embedding = False):
+        self.lock_embedding = lock_embedding
         super(AutoEncoderModel, self).__init__(use_average=use_average)
         logger.info("constructing auto encoder model dataset...")
         self.inputs, self.get_lstm_state, self.save_lstm_state = construct_autoencoder_model_input_tensor_with_state(**self.arguments["ae_inputs"])
         logger.info("encoder model dataset is constructed.")
         # same structure with language model
-        self.sequences["ae_sequence"] = seq.LanguageModelSequence(lock_embedding=lock_embedding, **self.arguments["ae_sequence"])
+        self.sequences["ae_sequence"] = seq.LanguageModelSequence(**self.arguments["ae_sequence"])
         self.loss_layer = layers.SoftmaxLoss(**self.arguments["ae_loss"])
         self.train_op = None
         self.loss = None
@@ -87,7 +89,7 @@ class AutoEncoderModel(BaseModel):
         with tf.control_dependencies([self.save_lstm_state(final_state)]):
             self.loss = tf.identity(self.loss)
         self.train_op = self.optimize(self.loss, self.arguments["max_grad_norm"],
-                                      self.arguments["lr"], self.arguments["lr_decay"])
+                                      self.arguments["lr"], self.arguments["lr_decay"], lock_embedding=self.lock_embedding)
         super(AutoEncoderModel, self).build()
 
     def fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None):

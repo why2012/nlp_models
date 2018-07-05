@@ -38,7 +38,6 @@ class Embedding(keras.layers.Layer):
           initializer=tf.random_uniform_initializer(-1., 1.),
           trainable=not self.lock_embedding,
           name='embedding')
-
         if self.normalized:
           self.var = self._normalize(self.var)
 
@@ -70,8 +69,8 @@ class LSTM(keras.layers.Layer):
     Exposes variables in `trainable_weights` property.
     """
 
-    def __init__(self, cell_size, num_layers=1, keep_prob=1., **kwargs):
-        super(LSTM, self).__init__(**kwargs)
+    def __init__(self, cell_size, num_layers=1, keep_prob=1., name = "lstm", **kwargs):
+        super(LSTM, self).__init__(name=name, **kwargs)
         self.cell_size = cell_size
         self.num_layers = num_layers
         self.keep_prob = keep_prob

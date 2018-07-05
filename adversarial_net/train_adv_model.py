@@ -49,7 +49,7 @@ def pre_train_cl_model(model_save_suffix = model_save_suffixes["pre_train_cl_mod
         "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"])
     }
     adv_cl_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepB_modules)
-    adv_cl_model.build(stepB=True)
+    adv_cl_model.build(stepB=True, restorer_tag_notifier=[])
     adv_cl_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
 def train_ae_model(model_save_suffix=model_save_suffixes["train_ae_model"]):
@@ -70,7 +70,7 @@ def train_generator(model_save_suffix=model_save_suffixes["train_generator"]):
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_ae_model"]),
     }
     generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepA_modules)
-    generator_model.build(stepA=True)
+    generator_model.build(stepA=True, restorer_tag_notifier=["EMBEDDING"])
     generator_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
 def train_topic_generator(model_save_suffix=model_save_suffixes["train_topic_generator"]):
@@ -84,7 +84,7 @@ def train_topic_generator(model_save_suffix=model_save_suffixes["train_topic_gen
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
     }
     generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepC_modules)
-    generator_model.build(stepC=True)
+    generator_model.build(stepC=True, restorer_tag_notifier=["EMBEDDING", "T_S", "T_D", "SEQ_G_LSTM"])
     generator_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
 def train_cl_model(model_save_suffix=model_save_suffixes["train_cl_model"]):
@@ -98,7 +98,7 @@ def train_cl_model(model_save_suffix=model_save_suffixes["train_cl_model"]):
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
     }
     generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepD_modules)
-    generator_model.build(stepD=True)
+    generator_model.build(stepD=True, restorer_tag_notifier=["EMBEDDING", "T_S", "T_D", "SEQ_G_LSTM"])
     generator_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
 def eval_generator(eval_batch_size = flags["eval_batch_size"], eval_topic_count = flags["eval_topic_count"],
@@ -109,7 +109,6 @@ def eval_generator(eval_batch_size = flags["eval_batch_size"], eval_topic_count 
         model_save_suffix = model_save_suffixes["train_generator"]
     else:
         model_save_suffix = model_save_suffixes["train_topic_generator"]
-    assert flags.pretrain_model_dir, "pretrain_model_dir is required"
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.eval_graph_modules)
     generator_model.build(eval_seq=True, batch_size=eval_batch_size, topic_count=eval_topic_count,
@@ -135,7 +134,7 @@ if __name__ == "__main__":
     flags.add_variable(name="vocab_freqs", value=vocab_freqs)
     if flags.step == "train_lm_model":
         train_lm_model()
-    elif flags.step == "pre_train_cl_model":
+    elif flags.step == "pretrain_cl_model":
         pre_train_cl_model()
     elif flags.step == "train_ae_model":
         train_ae_model()

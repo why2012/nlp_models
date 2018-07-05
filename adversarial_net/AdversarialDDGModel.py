@@ -43,6 +43,7 @@ class AdversarialDDGModel(BaseModel):
         # EMBEDDING
         if "EMBEDDING" in modules_abbreviation:
             self.to_embedding = seq.EmbeddingSequence(
+                var_scope_name="embedding",
                 vocab_size=self.arguments["lm_sequence"]["vocab_size"],
                 embedding_dim=self.arguments["lm_sequence"]["embedding_dim"],
                 vocab_freqs=self.arguments["vocab_freqs"],
@@ -437,6 +438,8 @@ class AdversarialDDGModel(BaseModel):
             relevent_sequences = {"EMBEDDING": self.to_embedding, "FG_S": self.fake_genuing_discriminator_seq2seq,
                                   "FG_D": self.fake_genuing_discriminator_dense,
                                   "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
+            pretrained_sequences = {"EMBEDDING": self.to_embedding, "FG_S": self.fake_genuing_discriminator_seq2seq,
+                                    "SEQ_G_LSTM": self.generator_lstms}
             variables["discriminator_loss"] = []
             variables["generator_loss"] = []
             variables["discriminator_loss"] += relevent_sequences["FG_S"].trainable_weights
@@ -452,6 +455,7 @@ class AdversarialDDGModel(BaseModel):
             losses["genuing_total_loss"] = genuing_total_loss
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss}
+            pretrained_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq}
             variables["genuing_total_loss"] = []
             variables["genuing_total_loss"] += relevent_sequences["EMBEDDING"].trainable_weights
             variables["genuing_total_loss"] += relevent_sequences["T_S"].trainable_weights
@@ -465,6 +469,8 @@ class AdversarialDDGModel(BaseModel):
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss,
                                   "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
+            pretrained_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
+                                    "T_D": self.topic_discriminator_dense, "SEQ_G_LSTM": self.generator_lstms}
             variables["fake_cl_loss"] = []
             variables["fake_cl_loss"] += relevent_sequences["SEQ_G_LSTM"].trainable_weights
             variables["fake_cl_loss"] += relevent_sequences["SEQ_G"].trainable_weights
@@ -477,6 +483,8 @@ class AdversarialDDGModel(BaseModel):
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss,
                                   "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
+            pretrained_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
+                                    "T_D": self.topic_discriminator_dense, "SEQ_G_LSTM": self.generator_lstms}
             variables["total_loss"] = []
             variables["total_loss"] += relevent_sequences["EMBEDDING"].trainable_weights
             variables["total_loss"] += relevent_sequences["T_S"].trainable_weights
@@ -488,6 +496,7 @@ class AdversarialDDGModel(BaseModel):
             self.stepTag = "eval_seq"
             relevent_sequences = {"EMBEDDING": self.to_embedding, "SEQ_G_LSTM": self.generator_lstms,
                                   "SEQ_G": self.sequence_generator}
+            pretrained_sequences = {}
             batch_size = kwargs["batch_size"]
             topic_count = kwargs["topic_count"]
             seq_length = kwargs["seq_length"]
@@ -498,13 +507,20 @@ class AdversarialDDGModel(BaseModel):
             self.stepTag = "eval_cl"
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense}
+            pretrained_sequences = {}
             acc_op, update_op = self.build_topic_discriminator_eval_graph()
             eval_graph["acc_op"] = acc_op
             eval_graph["update_op"] = update_op
         else:
             raise Exception("Unsupport ops")
 
-        for tag, seq in relevent_sequences.items():
+        if "restorer_tag_notifier" in kwargs:
+            restorer_tag_notifier = kwargs["restorer_tag_notifier"]
+        else:
+            restorer_tag_notifier = []
+        for tag, seq in pretrained_sequences.items():
+            if tag in restorer_tag_notifier:
+                seq.remove_scope_name_when_restore = False
             pretrain_restorer = seq.pretrain_restorer
             if pretrain_restorer:
                 if isinstance(pretrain_restorer, list):
@@ -512,7 +528,7 @@ class AdversarialDDGModel(BaseModel):
                         savers[tag] = pretrain_restorer[0]
                     else:
                         for i, restorer in enumerate(pretrain_restorer):
-                            savers[tag + "_%s" % i] = restorer
+                            savers[tag + "_%s" % (i + 1,)] = restorer
                 else:
                     savers[tag] = pretrain_restorer
 
@@ -564,7 +580,7 @@ class AdversarialDDGModel(BaseModel):
             savers = self._fit_kwargs["savers"]
             for tag, saver in savers.items():
                 pretrained_model_path = pretrain_model_pathes[tag]
-                self._restore_pretained_variables(sess, pretrained_model_path, variables_to_restore = None, save_model_path = osp.dirname(save_model_path), saver_for_restore = saver)
+                self._restore_pretained_variables(sess, pretrained_model_path, variables_to_restore = None, save_model_path = save_model_path, saver_for_restore = saver)
 
     def run_training_stepA(self, sess, save_model_path, max_steps, critic_iters = 10):
         losses = self._fit_kwargs["losses"]
@@ -600,8 +616,6 @@ class AdversarialDDGModel(BaseModel):
                                                                                               run_metadata=discriminator_run_metadata)
         acc_vals = {}; acc_vals.update(acc_ops_fake_val); acc_vals.update(acc_ops_genuing_val)
         duration = time.time() - start_time
-        if generator_loss_val < self.train_step_vars["best_loss_val"]:
-            self.train_step_vars["best_loss_val"] = generator_loss_val
         self._summary_step(sess=sess, debug_tensors=self.debug_tensors, global_step_val=self.global_step_val,
                            summary_writer=self.train_step_vars["summary_writer"], summary=[summary_generator, summary_discriminator],
                            run_metadata=[discriminator_run_metadata, generator_run_metadata],
@@ -609,8 +623,8 @@ class AdversarialDDGModel(BaseModel):
         self._eval_step(self.global_step_val, max_steps,
                         loss_val={"generator_loss_val": generator_loss_val, "discriminator_loss_val": discriminator_loss_val},
                         acc_val=acc_vals, duration=duration)
-        self._save_model_step(sess, self.train_step_vars["model_saver"], save_model_path, generator_loss_val,
-                              self.train_step_vars["best_loss_val"], self.global_step_val)
+        self.train_step_vars["best_loss_val"] = self._save_model_step(sess, self.train_step_vars["model_saver"], save_model_path, generator_loss_val,
+                                                                    self.train_step_vars["best_loss_val"], self.global_step_val)
         return generator_loss_val
 
     def single_loss_train_step(self, sess, train_op, loss, global_step, acc_ops, save_model_path, max_steps):
@@ -622,16 +636,14 @@ class AdversarialDDGModel(BaseModel):
             options=run_options,
             run_metadata=run_metadata)
         duration = time.time() - start_time
-        if loss_val < self.train_step_vars["best_loss_val"]:
-            self.train_step_vars["best_loss_val"] =loss_val
         self._summary_step(sess=sess, debug_tensors=self.debug_tensors, global_step_val=self.global_step_val,
                            summary_writer=self.train_step_vars["summary_writer"], summary=summary,
                            run_metadata=run_metadata, feed_dict=self.feed_dict)
         self._eval_step(self.global_step_val, max_steps,
                         loss_val=loss_val,
                         acc_val=acc_vals, duration=duration)
-        self._save_model_step(sess, self.train_step_vars["model_saver"], save_model_path, loss_val,
-                              self.train_step_vars["best_loss_val"], self.global_step_val)
+        self.train_step_vars["best_loss_val"] = self._save_model_step(sess, self.train_step_vars["model_saver"], save_model_path, loss_val,
+                                                                    self.train_step_vars["best_loss_val"], self.global_step_val)
         return loss_val
 
     def run_training_stepB(self, sess, save_model_path, max_steps):

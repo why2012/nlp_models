@@ -161,9 +161,12 @@ class BaseModel(object):
             train_op = variable_averages.apply(tvars)
         return train_op
 
-    def optimize(self, loss, max_grad_norm, lr, lr_decay):
+    def optimize(self, loss, max_grad_norm, lr, lr_decay, lock_embedding = False):
         with tf.name_scope('optimization'):
-            embedding_grads_and_vars = self._trainable_variables_filter_and_grads(loss, lambda v: "embedding" in v.op.name)
+            if lock_embedding:
+                embedding_grads_and_vars = []
+            else:
+                embedding_grads_and_vars = self._trainable_variables_filter_and_grads(loss, lambda v: "embedding" in v.op.name)
             non_embedding_grads_and_vars = self._get_and_clip_grads_by_variables(loss, self._trainable_variables_filter(
                 lambda v: "embedding" not in v.op.name), max_grad_norm)
             grads_and_vars = embedding_grads_and_vars + non_embedding_grads_and_vars
@@ -192,6 +195,8 @@ class BaseModel(object):
 
     def _restore_pretained_variables(self, sess, pretrained_model_path, variables_to_restore, save_model_path = None, saver_for_restore = None):
         if pretrained_model_path:
+            if variables_to_restore is None and saver_for_restore:
+                variables_to_restore = saver_for_restore._var_list
             logger.info('Will attempt restore from %s: %s', pretrained_model_path, variables_to_restore)
             if saver_for_restore is None:
                 assert variables_to_restore
@@ -278,10 +283,14 @@ class BaseModel(object):
                 "save_best_check_steps"] == 0:
                 logger.info("save best to {}".format(save_model_path))
                 model_saver.save(sess, save_model_path, global_step_val)
+                best_loss_val = loss_val
             # save model per save_steps
             if not self.arguments["save_best"] and global_step_val % self.arguments["save_steps"] == 0:
                 logger.info("save model.")
                 model_saver.save(sess, save_model_path, global_step_val)
+                if loss_val < best_loss_val:
+                    best_loss_val = loss_val
+        return best_loss_val
 
     def _initialize_process(self, sess, save_model_path):
         model_saver = tf.train.Saver(max_to_keep=1)
@@ -342,13 +351,11 @@ class BaseModel(object):
                                                                                feed_dict=feed_dict, run_options=run_options,
                                                                                run_metadata=run_metadata)
                 duration = time.time() - start_time
-                if loss_val < best_loss_val:
-                    best_loss_val = loss_val
                 # summary & debug trace phase
-                self._summary_step(debug_tensors=self.debug_tensors, global_step_val=global_step_val,
+                self._summary_step(sess=sess, debug_tensors=self.debug_tensors, global_step_val=global_step_val,
                                    summary_writer=summary_writer, summary=summary, run_metadata=run_metadata, feed_dict=feed_dict)
                 # Logging
                 self._eval_step(global_step_val, max_steps, loss_val, acc_val, duration)
                 # save model if could
-                self._save_model_step(sess, model_saver, save_model_path, loss_val, best_loss_val, global_step_val)
+                best_loss_val = self._save_model_step(sess, model_saver, save_model_path, loss_val, best_loss_val, global_step_val)
             self._finish_process(sess, coodinator, threads, model_saver, save_model_path, global_step_val, loss_val, best_loss_val)

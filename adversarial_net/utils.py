@@ -143,8 +143,15 @@ class ArgumentsBuilder(object):
         value = self[item]
         if isinstance(value, dict):
             ReadObject = namedtuple(item, value.keys())
-            value = ReadObject(value.items())
+            value = ReadObject(**value)
         return value
+
+    def __contains__(self, item):
+        try:
+            value = self[item]
+            return True
+        except:
+            return False
 
     def __getitem__(self, name_or_scope, assoc_find = False):
         if not self.built:

@@ -13,7 +13,9 @@ class LanguageModelSequence(object):
                  rnn_num_layers=1, lstm_keep_pro_out=1, lock_embedding=False):
         self.embedding_layer = layers.Embedding(vocab_size=vocab_size, embedding_dim=embedding_dim, vocab_freqs=vocab_freqs,
                                            keep_prob=keep_embed_prob, normalize=normalize, lock_embedding=lock_embedding)
+        self.embedding_layer.build([-1, -1])
         self.lstm_layer = layers.LSTM(cell_size=rnn_cell_size, num_layers=rnn_num_layers, keep_prob=lstm_keep_pro_out)
+        self.lstm_layer.build([-1, embedding_dim])
         self.embedding = None
 
     # output, final_state(LSTMTuple, ...)
@@ -38,11 +40,13 @@ class LanguageModelSequence(object):
         return []
 
 class EmbeddingSequence(object):
-    def __init__(self, vocab_size, embedding_dim, vocab_freqs, normalize=True, keep_embed_prob=1):
-        self.embedding_layer = layers.Embedding(vocab_size=vocab_size, embedding_dim=embedding_dim,
-                                                vocab_freqs=vocab_freqs,
-                                                keep_prob=keep_embed_prob, normalize=normalize)
-        self.embedding_layer.build([-1, -1])
+    def __init__(self, var_scope_name, vocab_size, embedding_dim, vocab_freqs, normalize=True, keep_embed_prob=1):
+        with tf.variable_scope(var_scope_name):
+            self.embedding_layer = layers.Embedding(vocab_size=vocab_size, embedding_dim=embedding_dim,
+                                                    vocab_freqs=vocab_freqs,
+                                                    keep_prob=keep_embed_prob, normalize=normalize)
+            self.embedding_layer.build([-1, -1])
+        self.remove_scope_name_when_restore = True
 
     def __call__(self, inputs):
         # inputs (batch_size, time_steps)
@@ -56,7 +60,10 @@ class EmbeddingSequence(object):
 
     @property
     def pretrain_weights(self):
-        return [{x.op.name.split("/", 1)[1]: x for x in self.embedding_layer.trainable_weights}]
+        if self.remove_scope_name_when_restore:
+            return [{x.op.name.split("/", 1)[1]: x for x in self.embedding_layer.trainable_weights}]
+        else:
+            return [{x.op.name: x for x in self.embedding_layer.trainable_weights}]
 
     @property
     def pretrain_restorer(self):
@@ -71,6 +78,7 @@ class Seq2SeqSequence(object):
         with tf.variable_scope(var_scope_name):
             self.lstm_layer = layers.LSTM(cell_size=rnn_cell_size, num_layers=rnn_num_layers, keep_prob=lstm_keep_pro_out)
             self.lstm_layer.build(input_shape=[-1, input_size])
+        self.remove_scope_name_when_restore = True
 
     def __call__(self, embedding, lstm_initial_state, sequence_len = None):
         # embedding (batch_size, time_steps, embed_size)
@@ -85,7 +93,10 @@ class Seq2SeqSequence(object):
 
     @property
     def pretrain_weights(self):
-        return [{x.op.name.split("/", 1)[1]: x for x in self.lstm_layer.trainable_weights}]
+        if self.remove_scope_name_when_restore:
+            return [{x.op.name.split("/", 1)[1]: x for x in self.lstm_layer.trainable_weights}]
+        else:
+            return [{x.op.name: x for x in self.lstm_layer.trainable_weights}]
 
     @property
     def pretrain_restorer(self):
@@ -189,6 +200,7 @@ class LanguageSequenceGeneratorLSTM(object):
         with tf.variable_scope("ae_lstm_layer"):
             self.ae_lstm_layer = layers.LSTM(cell_size=rnn_cell_size, num_layers=rnn_num_layers, keep_prob=lstm_keep_pro_out)
             self.ae_lstm_layer.build(input_shape=[-1, input_size])
+        self.remove_scope_name_when_restore = True
 
     @property
     def trainable_weights(self):
@@ -196,8 +208,12 @@ class LanguageSequenceGeneratorLSTM(object):
 
     @property
     def pretrain_weights(self):
-        return [{x.op.name.split("/", 1)[1]: x for x in self.lm_lstm_layer.trainable_weights},
-                {x.op.name.split("/", 1)[1]: x for x in self.ae_lstm_layer.trainable_weights}]
+        if self.remove_scope_name_when_restore:
+            return [{x.op.name.split("/", 1)[1]: x for x in self.lm_lstm_layer.trainable_weights},
+                    {x.op.name.split("/", 1)[1]: x for x in self.ae_lstm_layer.trainable_weights}]
+        else:
+            return [{x.op.name: x for x in self.lm_lstm_layer.trainable_weights},
+                    {x.op.name: x for x in self.ae_lstm_layer.trainable_weights}]
 
     @property
     def pretrain_restorer(self):
@@ -213,6 +229,7 @@ class RnnOutputToEmbedding(object):
             self.softmax_loss.build(([-1, input_size],))
             self.toEmbedding = layers.RnnOutputToEmbedding(vocab_size, embedding_weights, self.softmax_loss.lin_w, self.softmax_loss.lin_b, sampler)
             self.toEmbedding.build(input_shape=[-1, input_size])
+        self.remove_scope_name_when_restore = True
 
     @property
     def only_logits(self):
@@ -227,7 +244,10 @@ class RnnOutputToEmbedding(object):
 
     @property
     def pretrain_weights(self):
-        return [{x.op.name.split("/", 1)[1]: x for x in self.softmax_loss.trainable_weights}]
+        if self.remove_scope_name_when_restore:
+            return [{x.op.name.split("/", 1)[1]: x for x in self.softmax_loss.trainable_weights}]
+        else:
+            return [{x.op.name: x for x in self.softmax_loss.trainable_weights}]
 
     @property
     def pretrain_restorer(self):
@@ -438,6 +458,7 @@ class ClassificationModelDenseHeader(object):
         else:
             with tf.variable_scope(var_scope_name):
                 build()
+        self.remove_scope_name_when_restore = True
 
     def __call__(self, inputs):
         return self.dense_header(inputs)
@@ -448,7 +469,10 @@ class ClassificationModelDenseHeader(object):
 
     @property
     def pretrain_weights(self):
-        return [{x.op.name.split("/", 1)[1]: x for x in self.dense_header.trainable_weights}]
+        if self.remove_scope_name_when_restore:
+            return [{x.op.name.split("/", 1)[1]: x for x in self.dense_header.trainable_weights}]
+        else:
+            return [{x.op.name: x for x in self.dense_header.trainable_weights}]
 
     @property
     def pretrain_restorer(self):
