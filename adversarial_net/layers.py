@@ -18,12 +18,14 @@ class Embedding(keras.layers.Layer):
                normalize=False,
                vocab_freqs=None,
                keep_prob=1.,
+               lock_embedding = False,
                **kwargs):
         super(Embedding, self).__init__(**kwargs)
         self.vocab_size = vocab_size
         self.embedding_dim = embedding_dim
         self.normalized = normalize
         self.keep_prob = keep_prob
+        self.lock_embedding = lock_embedding
 
         if normalize:
           assert vocab_freqs is not None
@@ -34,6 +36,7 @@ class Embedding(keras.layers.Layer):
         self.var = self.add_weight(
           shape=(self.vocab_size, self.embedding_dim),
           initializer=tf.random_uniform_initializer(-1., 1.),
+          trainable=not self.lock_embedding,
           name='embedding')
 
         if self.normalized:

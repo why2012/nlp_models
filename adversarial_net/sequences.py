@@ -10,9 +10,9 @@ from adversarial_net import layers
 
 class LanguageModelSequence(object):
     def __init__(self, vocab_size, embedding_dim, vocab_freqs, rnn_cell_size, normalize=True, keep_embed_prob=1,
-                 rnn_num_layers=1, lstm_keep_pro_out=1):
+                 rnn_num_layers=1, lstm_keep_pro_out=1, lock_embedding=False):
         self.embedding_layer = layers.Embedding(vocab_size=vocab_size, embedding_dim=embedding_dim, vocab_freqs=vocab_freqs,
-                                           keep_prob=keep_embed_prob, normalize=normalize)
+                                           keep_prob=keep_embed_prob, normalize=normalize, lock_embedding=lock_embedding)
         self.lstm_layer = layers.LSTM(cell_size=rnn_cell_size, num_layers=rnn_num_layers, keep_prob=lstm_keep_pro_out)
         self.embedding = None
 

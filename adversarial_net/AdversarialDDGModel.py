@@ -507,7 +507,14 @@ class AdversarialDDGModel(BaseModel):
         for tag, seq in relevent_sequences.items():
             pretrain_restorer = seq.pretrain_restorer
             if pretrain_restorer:
-                savers[tag] = pretrain_restorer
+                if isinstance(pretrain_restorer, list):
+                    if len(pretrain_restorer) == 1:
+                        savers[tag] = pretrain_restorer[0]
+                    else:
+                        for i, restorer in enumerate(pretrain_restorer):
+                            savers[tag + "_%s" % i] = restorer
+                else:
+                    savers[tag] = pretrain_restorer
 
         self.optimize(max_grad_norm=self.arguments["max_grad_norm"], lr=self.arguments["lr"], lr_decay=self.arguments["lr_decay"])
 

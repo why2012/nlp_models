@@ -1,5 +1,5 @@
 import logging
-from collections import defaultdict
+from collections import defaultdict, namedtuple
 import threading
 from multiprocessing import Lock
 import argparse
@@ -137,6 +137,14 @@ class ArgumentsBuilder(object):
         self.arguments = ArgumentsGetter()
         self.parser.parse_args(namespace=self.arguments)
         self.built = True
+
+    def __getattr__(self, item):
+        assert item in self, "%s is not defined or assigned" % item
+        value = self[item]
+        if isinstance(value, dict):
+            ReadObject = namedtuple(item, value.keys())
+            value = ReadObject(value.items())
+        return value
 
     def __getitem__(self, name_or_scope, assoc_find = False):
         if not self.built:

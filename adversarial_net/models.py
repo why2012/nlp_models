@@ -16,12 +16,12 @@ logger = getLogger("model")
 EOS_TAG = 2
 
 class LanguageModel(BaseModel):
-    def __init__(self, use_average = False):
+    def __init__(self, use_average = False, lock_embedding = False):
         super(LanguageModel, self).__init__(use_average=use_average)
         logger.info("constructing language model dataset...")
         self.inputs, self.get_lstm_state, self.save_lstm_state = construct_language_model_input_tensor_with_state(**self.arguments["lm_inputs"])
         logger.info("language model dataset is constructed.")
-        self.sequences["lm_sequence"] = seq.LanguageModelSequence(**self.arguments["lm_sequence"])
+        self.sequences["lm_sequence"] = seq.LanguageModelSequence(lock_embedding=lock_embedding, **self.arguments["lm_sequence"])
         self.loss_layer = layers.SoftmaxLoss(**self.arguments["lm_loss"])
         self.train_op = None
         self.loss = None
@@ -48,17 +48,20 @@ class LanguageModel(BaseModel):
         super(LanguageModel, self).build()
 
     def fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None):
-        variables_to_restore = self.trainable_weights()
+        variables_to_restore = []
+        for variable in self.trainable_weights():
+            if "embedding" in variable.op.name:
+                variables_to_restore.append(variable)
         super(LanguageModel, self)._fit(model_inpus, save_model_path, pretrained_model_path, variables_to_restore=variables_to_restore)
 
 class AutoEncoderModel(BaseModel):
-    def __init__(self, use_average = False):
+    def __init__(self, use_average = False, lock_embedding = False):
         super(AutoEncoderModel, self).__init__(use_average=use_average)
         logger.info("constructing auto encoder model dataset...")
         self.inputs, self.get_lstm_state, self.save_lstm_state = construct_autoencoder_model_input_tensor_with_state(**self.arguments["ae_inputs"])
         logger.info("encoder model dataset is constructed.")
         # same structure with language model
-        self.sequences["ae_sequence"] = seq.LanguageModelSequence(**self.arguments["ae_sequence"])
+        self.sequences["ae_sequence"] = seq.LanguageModelSequence(lock_embedding=lock_embedding, **self.arguments["ae_sequence"])
         self.loss_layer = layers.SoftmaxLoss(**self.arguments["ae_loss"])
         self.train_op = None
         self.loss = None
@@ -88,7 +91,10 @@ class AutoEncoderModel(BaseModel):
         super(AutoEncoderModel, self).build()
 
     def fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None):
-        variables_to_restore = self.trainable_weights()
+        variables_to_restore = []
+        for variable in self.trainable_weights():
+            if "embedding" in variable.op.name:
+                variables_to_restore.append(variable)
         super(AutoEncoderModel, self)._fit(model_inpus, save_model_path, pretrained_model_path, variables_to_restore=variables_to_restore)
 
 class AdversarialClassificationModel(BaseModel):
