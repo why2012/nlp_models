@@ -243,6 +243,10 @@ class RnnOutputToEmbedding(object):
         return self.toEmbedding(inputs)
 
     @property
+    def trainable_weights(self):
+        return self.softmax_loss.trainable_weights
+
+    @property
     def pretrain_weights(self):
         if self.remove_scope_name_when_restore:
             return [{x.op.name.split("/", 1)[1]: x for x in self.softmax_loss.trainable_weights}]

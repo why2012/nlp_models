@@ -26,11 +26,11 @@ class AdversarialDDGModel(BaseModel):
     # stepB: pretrain topic_discriminator with genuing data
     # stepC: use topic_discriminator to train topic_generator
     # stepD: use topic_generator and genuing data to re-train topic_discriminator
-    stepA_modules = ["EMBEDDING", "FG_S", "FG_D", "SEQ_G_LSTM", "SEQ_G"]
+    stepA_modules = ["EMBEDDING", "FG_S", "FG_D", "SEQ_G_LSTM", "SEQ_G", "RNN_TO_EMBEDDING"]
     stepB_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS"]
-    stepC_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS", "SEQ_G_LSTM", "SEQ_G"]
-    stepD_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS", "SEQ_G_LSTM", "SEQ_G"]
-    eval_graph_modules = ["EMBEDDING", "SEQ_G_LSTM", "SEQ_G"]
+    stepC_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS", "SEQ_G_LSTM", "SEQ_G", "RNN_TO_EMBEDDING"]
+    stepD_modules = ["EMBEDDING", "T_S", "T_D", "ADV_LOSS", "CL_LOSS", "SEQ_G_LSTM", "SEQ_G", "RNN_TO_EMBEDDING"]
+    eval_graph_modules = ["EMBEDDING", "SEQ_G_LSTM", "SEQ_G", "RNN_TO_EMBEDDING"]
     eval_cl_modules = ["EMBEDDING", "T_S", "T_D", "CL_LOSS"]
     def __init__(self, use_average = False, init_modules=modules.keys()):
         super(AdversarialDDGModel, self).__init__(use_average=use_average)
@@ -53,7 +53,7 @@ class AdversarialDDGModel(BaseModel):
         if "FG_S" in modules_abbreviation:
             self.fake_genuing_discriminator_seq2seq = seq.Seq2SeqSequence(
                 var_scope_name="fake_genuing_discriminator_seq2seq",
-                rnn_cell_size=self.arguments["lm_sequence"]["rnn_cell_size"],
+                rnn_cell_size=self.arguments["gan"]["rnn_cell_size"],
                 input_size=self.arguments["lm_sequence"]["embedding_dim"],
                 rnn_num_layers=self.arguments["lm_sequence"]["rnn_num_layers"],
                 lstm_keep_pro_out=self.arguments["lm_sequence"]["lstm_keep_pro_out"])
@@ -71,7 +71,7 @@ class AdversarialDDGModel(BaseModel):
                 var_scope_name="fake_genuing_discriminator_dense",
                 layer_sizes=[self.arguments["adv_cl_sequence"]["hidden_size"]] * self.arguments["adv_cl_sequence"][
                     "num_layers"],
-                input_size=self.arguments["adv_cl_sequence"]["input_size"],
+                input_size=self.arguments["gan"]["rnn_cell_size"],
                 num_classes=1,
                 keep_prob=self.arguments["adv_cl_sequence"]["keep_prob"])
         # T_D
@@ -92,20 +92,23 @@ class AdversarialDDGModel(BaseModel):
         # SEQ_G_LSTM
         if "SEQ_G_LSTM" in modules_abbreviation:
             self.generator_lstms = seq.LanguageSequenceGeneratorLSTM(
-                rnn_cell_size=self.arguments["lm_sequence"]["rnn_cell_size"],
+                rnn_cell_size=self.arguments["gan"]["rnn_cell_size"],
                 input_size=self.arguments["lm_sequence"]["embedding_dim"],
                 rnn_num_layers=self.arguments["lm_sequence"]["rnn_num_layers"],
                 lstm_keep_pro_out=self.arguments["lm_sequence"]["lstm_keep_pro_out"])
+        # RNN_TO_EMBEDDING
+        if "RNN_TO_EMBEDDING" in modules_abbreviation:
+            self.rnn_to_embedding = seq.RnnOutputToEmbedding(
+                    var_scope_name="sequence_generator",
+                    vocab_size=self.arguments["lm_sequence"]["vocab_size"],
+                    input_size=self.arguments["gan"]["rnn_cell_size"],
+                    embedding_weights=self.to_embedding.embedding_layer.var)
         # SEQ_G
         if "SEQ_G" in modules_abbreviation:
             self.sequence_generator = seq.LanguageSequenceGenerator(
                 ae_lstm_cell=self.generator_lstms.ae_lstm_layer.cell,
                 lm_lstm_cell=self.generator_lstms.lm_lstm_layer.cell,
-                rnnOutputToEmbedding=seq.RnnOutputToEmbedding(
-                    var_scope_name="sequence_generator",
-                    vocab_size=self.arguments["lm_sequence"]["vocab_size"],
-                    input_size=self.arguments["lm_sequence"]["rnn_cell_size"],
-                    embedding_weights=self.to_embedding.embedding_layer.var))
+                rnnOutputToEmbedding=self.rnn_to_embedding)
 
     def genuing_inputs(self, inputs_args = None):
         inputs_args = inputs_args if inputs_args is not None else self.arguments["adv_cl_inputs"]
@@ -436,16 +439,17 @@ class AdversarialDDGModel(BaseModel):
             losses["discriminator_loss"] = discriminator_loss
             losses["generator_loss"] = generator_loss
             relevent_sequences = {"EMBEDDING": self.to_embedding, "FG_S": self.fake_genuing_discriminator_seq2seq,
-                                  "FG_D": self.fake_genuing_discriminator_dense,
+                                  "FG_D": self.fake_genuing_discriminator_dense, "RNN_TO_EMBEDDING": self.rnn_to_embedding,
                                   "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
             pretrained_sequences = {"EMBEDDING": self.to_embedding, "FG_S": self.fake_genuing_discriminator_seq2seq,
-                                    "SEQ_G_LSTM": self.generator_lstms}
+                                    "SEQ_G_LSTM": self.generator_lstms, "RNN_TO_EMBEDDING": self.rnn_to_embedding}
             variables["discriminator_loss"] = []
             variables["generator_loss"] = []
             variables["discriminator_loss"] += relevent_sequences["FG_S"].trainable_weights
             variables["discriminator_loss"] += relevent_sequences["FG_D"].trainable_weights
             variables["generator_loss"] += relevent_sequences["SEQ_G_LSTM"].trainable_weights
             variables["generator_loss"] += relevent_sequences["SEQ_G"].trainable_weights
+            variables["generator_loss"] += relevent_sequences["RNN_TO_EMBEDDING"].trainable_weights
             accs["discriminator_genuing_acc"] = genuing_fake_accs[0]
             accs["discriminator_fake_acc"] = genuing_fake_accs[1]
             accs["discriminator_total_acc"] = genuing_fake_accs[2]
@@ -468,12 +472,15 @@ class AdversarialDDGModel(BaseModel):
             losses["fake_cl_loss"] = fake_cl_loss
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss,
-                                  "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
+                                  "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator,
+                                  "RNN_TO_EMBEDDING": self.rnn_to_embedding}
             pretrained_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
-                                    "T_D": self.topic_discriminator_dense, "SEQ_G_LSTM": self.generator_lstms}
+                                    "T_D": self.topic_discriminator_dense, "SEQ_G_LSTM": self.generator_lstms,
+                                    "RNN_TO_EMBEDDING": self.rnn_to_embedding}
             variables["fake_cl_loss"] = []
             variables["fake_cl_loss"] += relevent_sequences["SEQ_G_LSTM"].trainable_weights
             variables["fake_cl_loss"] += relevent_sequences["SEQ_G"].trainable_weights
+            variables["fake_cl_loss"] += relevent_sequences["RNN_TO_EMBEDDING"].trainable_weights
             accs["fake_cl_acc"] = fake_cl_acc
         elif stepD:
             self.stepTag = "stepD"
@@ -482,9 +489,11 @@ class AdversarialDDGModel(BaseModel):
             losses["total_loss"] = genuing_total_loss + fake_total_loss
             relevent_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
                                   "T_D": self.topic_discriminator_dense, "ADV_LOSS": self.adversarial_loss,
-                                  "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator}
+                                  "SEQ_G_LSTM": self.generator_lstms, "SEQ_G": self.sequence_generator,
+                                  "RNN_TO_EMBEDDING": self.rnn_to_embedding}
             pretrained_sequences = {"EMBEDDING": self.to_embedding, "T_S": self.topic_discriminator_seq2seq,
-                                    "T_D": self.topic_discriminator_dense, "SEQ_G_LSTM": self.generator_lstms}
+                                    "T_D": self.topic_discriminator_dense, "SEQ_G_LSTM": self.generator_lstms,
+                                    "RNN_TO_EMBEDDING": self.rnn_to_embedding}
             variables["total_loss"] = []
             variables["total_loss"] += relevent_sequences["EMBEDDING"].trainable_weights
             variables["total_loss"] += relevent_sequences["T_S"].trainable_weights
@@ -495,7 +504,7 @@ class AdversarialDDGModel(BaseModel):
         elif eval_seq:
             self.stepTag = "eval_seq"
             relevent_sequences = {"EMBEDDING": self.to_embedding, "SEQ_G_LSTM": self.generator_lstms,
-                                  "SEQ_G": self.sequence_generator}
+                                  "SEQ_G": self.sequence_generator, "RNN_TO_EMBEDDING": self.rnn_to_embedding}
             pretrained_sequences = {}
             batch_size = kwargs["batch_size"]
             topic_count = kwargs["topic_count"]
@@ -714,7 +723,15 @@ class AdversarialDDGModel(BaseModel):
             coodinator.request_stop()
             coodinator.join(threads)
 
+    def compute_and_print_graph_size(self):
+        var_size = 0
+        for v in tf.global_variables():
+            var_size += np.prod(v.get_shape().as_list()) * v.dtype.size
+        var_size_mb = var_size / 1024 ** 2
+        logger.info("Graph total size is: %s MB.", var_size_mb)
+
     def fit(self, save_model_path=None, pretrain_model_pathes = {}):
+        self.compute_and_print_graph_size()
         model_phase = 1 if self.arguments["phase"] in ["train"] else 0
         self.feed_dict[tf.keras.backend.learning_phase()] = model_phase
         self.global_step_val = 0

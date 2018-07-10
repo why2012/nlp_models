@@ -68,6 +68,7 @@ def train_generator(model_save_suffix=model_save_suffixes["train_generator"]):
         "FG_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
         "SEQ_G_LSTM_1": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_ae_model"]),
+        "RNN_TO_EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
     }
     generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepA_modules)
     generator_model.build(stepA=True, restorer_tag_notifier=["EMBEDDING"])
@@ -82,9 +83,10 @@ def train_topic_generator(model_save_suffix=model_save_suffixes["train_topic_gen
         "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
         "SEQ_G_LSTM_1": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
+        "RNN_TO_EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
     }
     generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepC_modules)
-    generator_model.build(stepC=True, restorer_tag_notifier=["EMBEDDING", "T_S", "T_D", "SEQ_G_LSTM"])
+    generator_model.build(stepC=True, restorer_tag_notifier=["EMBEDDING", "T_S", "T_D", "SEQ_G_LSTM", "RNN_TO_EMBEDDING"])
     generator_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
 def train_cl_model(model_save_suffix=model_save_suffixes["train_cl_model"]):
@@ -96,9 +98,10 @@ def train_cl_model(model_save_suffix=model_save_suffixes["train_cl_model"]):
         "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
         "SEQ_G_LSTM_1": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
+        "RNN_TO_EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
     }
     generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepD_modules)
-    generator_model.build(stepD=True, restorer_tag_notifier=["EMBEDDING", "T_S", "T_D", "SEQ_G_LSTM"])
+    generator_model.build(stepD=True, restorer_tag_notifier=["EMBEDDING", "T_S", "T_D", "SEQ_G_LSTM", "RNN_TO_EMBEDDING"])
     generator_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
 def eval_generator(eval_batch_size = flags["eval_batch_size"], eval_topic_count = flags["eval_topic_count"],

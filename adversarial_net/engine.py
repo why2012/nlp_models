@@ -24,7 +24,7 @@ def configure():
 
     flags.add_argument(scope="lm_sequence", name="vocab_size", argtype=int, default=50000)
     flags.add_argument(scope="lm_sequence", name="embedding_dim", argtype=int, default=256)
-    flags.add_argument(scope="lm_sequence", name="rnn_cell_size", argtype=int, default=1024)
+    flags.add_argument(scope="lm_sequence", name="rnn_cell_size", argtype=int, default=256)
     flags.add_argument(scope="lm_sequence", name="normalize", argtype="bool", default=True)
     flags.add_argument(scope="lm_sequence", name="keep_embed_prob", argtype=float, default=1.0)
     flags.add_argument(scope="lm_sequence", name="lstm_keep_pro_out", argtype=float, default=1.0)
@@ -52,7 +52,8 @@ def configure():
     flags.add_argument(scope="vir_adv_loss", name="num_power_iteration", argtype=int, default=1)
     flags.add_argument(scope="vir_adv_loss", name="small_constant_for_finite_diff", argtype=float, default=1e-1)
 
-    flags.add_argument(scope="gan", name="critic_iters", argtype=int, default=5)
+    flags.add_argument(scope="gan", name="critic_iters", argtype=int, default=10)
+    flags.add_argument(scope="gan", name="rnn_cell_size", argtype=int, default=256)
 
     flags.add_argument(name="phase", argtype=str, default="train")
     flags.add_argument(name="max_grad_norm", argtype=float, default=1.0)
