@@ -37,11 +37,16 @@ class LanguageModel(BaseModel):
         print("lm_sequence", lm_sequence)
         print("lm_loss", lm_loss)
 
-    def build(self):
+    def build(self, use_sampler = True, hard_mode = False, forget_bias = 0.0):
         X_tensor, y_tensor, weight_tensor = tf.squeeze(self.inputs.sequences["X"], axis=-1), tf.squeeze(
             self.inputs.sequences["y"], axis=-1), tf.squeeze(self.inputs.sequences["weight"], axis=-1)
         lstm_initial_state = self.get_lstm_state()
         output_tensor, final_state = self.sequences["lm_sequence"](X_tensor, lstm_initial_state, sequence_len=self.inputs.length)
+
+        self.loss_layer.use_sampler = use_sampler
+        self.loss_layer.hard_mode = hard_mode
+        self.sequences["lm_sequence"].lstm_layer.forget_bias = forget_bias
+
         self.loss = self.loss_layer((output_tensor, y_tensor, weight_tensor))
         self.acc = self.loss_layer.lm_acc
         with tf.control_dependencies([self.save_lstm_state(final_state)]):
@@ -59,17 +64,23 @@ class LanguageModel(BaseModel):
         freqs = words_list[:, 1]
         vocab_size = self.arguments["lm_sequence"]["vocab_size"]
         freqs = freqs[:vocab_size].astype(np.float32)
-        freqs[:100] = 0
+        freqs[:10] = 0
         freqs /= np.sum(freqs)
-        choosed_words_index = np.random.choice(vocab_size, batch_size, p=freqs)
+        choosed_words_index = np.random.choice(vocab_size, batch_size, p=freqs).astype(np.int64)
         choosed_words = words[choosed_words_index]
         # add up special tokens index
         choosed_words_index += 3
         self.loss_layer.build([(-1, self.arguments["lm_sequence"]["rnn_cell_size"])])
+        rnn_to_embedding = layers.RnnOutputToEmbedding(
+            vocab_size=self.arguments["lm_sequence"]["vocab_size"],
+            embedding_weights=self.sequences["lm_sequence"].embedding_layer.var,
+            var_w=self.loss_layer.lin_w,
+            var_b=self.loss_layer.lin_b)
         self.eval_lm_model = seq.EvalLanguageModel(language_model_seq=self.sequences["lm_sequence"],
-                                                   lm_lin_w=self.loss_layer.lin_w, lm_lin_b=self.loss_layer.lin_b)
-        generated_sequences = self.eval_lm_model(start_word_indexes=choosed_words_index, time_steps=seq_len)
-        with tf.Session() as sess:
+                                                   lm_lin_w=self.loss_layer.lin_w, lm_lin_b=self.loss_layer.lin_b,
+                                                   rnnOutputToEmbedding=rnn_to_embedding)
+        generated_sequences = self.eval_lm_model(start_word_indexes=choosed_words_index, time_steps=seq_len, zero_states=True)
+        with tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))) as sess:
             self._resotre_training_model(sess=sess, save_model_path=save_model_path)
             generated_sequences_val = sess.run(generated_sequences)
         generated_sentences = wordCounter.reverse(indices=generated_sequences_val, num_words=vocab_size)
@@ -130,10 +141,16 @@ class AutoEncoderModel(BaseModel):
         EOS_TAG = 2
         choosed_words_index = np.array([EOS_TAG] * batch_size).astype(np.int64)
         self.loss_layer.build([(-1, self.arguments["ae_sequence"]["rnn_cell_size"])])
+        rnn_to_embedding = layers.RnnOutputToEmbedding(
+            vocab_size=self.arguments["ae_sequence"]["vocab_size"],
+            embedding_weights=self.sequences["ae_sequence"].embedding_layer.var,
+            var_w=self.loss_layer.lin_w,
+            var_b=self.loss_layer.lin_b)
         self.eval_lm_model = seq.EvalLanguageModel(language_model_seq=self.sequences["ae_sequence"],
-                                                   lm_lin_w=self.loss_layer.lin_w, lm_lin_b=self.loss_layer.lin_b)
+                                                   lm_lin_w=self.loss_layer.lin_w, lm_lin_b=self.loss_layer.lin_b,
+                                                   rnnOutputToEmbedding=rnn_to_embedding)
         generated_sequences = self.eval_lm_model(start_word_indexes=choosed_words_index, time_steps=seq_len)
-        with tf.Session() as sess:
+        with tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))) as sess:
             self._resotre_training_model(sess=sess, save_model_path=save_model_path)
             generated_sequences_val = sess.run(generated_sequences)
         generated_sentences = wordCounter.reverse(indices=generated_sequences_val, num_words=vocab_size)

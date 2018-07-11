@@ -9,6 +9,10 @@ from adversarial_net.utils import getLogger
 from adversarial_net import osp
 from collections import defaultdict
 
+# batch_size 256
+# unroll_steps 400
+# rnn_cell_size 1024
+# vocab_size 86934
 logger = getLogger("model")
 def configure():
     flags.register_variable(name="vocab_freqs")
@@ -24,7 +28,8 @@ def configure():
 
     flags.add_argument(scope="lm_sequence", name="vocab_size", argtype=int, default=50000)
     flags.add_argument(scope="lm_sequence", name="embedding_dim", argtype=int, default=256)
-    flags.add_argument(scope="lm_sequence", name="rnn_cell_size", argtype=int, default=256)
+    # should be same with gan rnn_cell_size
+    flags.add_argument(scope="lm_sequence", name="rnn_cell_size", argtype=int, default=1024)
     flags.add_argument(scope="lm_sequence", name="normalize", argtype="bool", default=True)
     flags.add_argument(scope="lm_sequence", name="keep_embed_prob", argtype=float, default=1.0)
     flags.add_argument(scope="lm_sequence", name="lstm_keep_pro_out", argtype=float, default=1.0)
@@ -53,7 +58,7 @@ def configure():
     flags.add_argument(scope="vir_adv_loss", name="small_constant_for_finite_diff", argtype=float, default=1e-1)
 
     flags.add_argument(scope="gan", name="critic_iters", argtype=int, default=5)
-    flags.add_argument(scope="gan", name="rnn_cell_size", argtype=int, default=256)
+    flags.add_argument(scope="gan", name="rnn_cell_size", argtype=int, default=1024)
 
     flags.add_argument(name="phase", argtype=str, default="train")
     flags.add_argument(name="max_grad_norm", argtype=float, default=1.0)
@@ -68,6 +73,9 @@ def configure():
     flags.add_argument(name="should_restore_if_could", argtype="bool", default=True)
     flags.add_argument(name="tf_debug_trace", argtype=bool, default=False)
     flags.add_argument(name="tf_timeline_dir", argtype=str, default=None)
+    flags.add_argument(name="no_need_clip_grads", argtype=bool, default=False)
+    # continue from break point
+    flags.add_argument(name="best_loss_val", argtype=float, default=99999999.0)
 configure()
 
 class VariableManager(object):
@@ -121,7 +129,9 @@ class BaseModel(object):
         else:
             return _trainable_weights
 
-    def _get_and_clip_grads_by_variables(self, loss, variables, max_grad_norm, exclude_op_names = []):
+    def _get_and_clip_grads_by_variables(self, loss, variables, max_grad_norm, exclude_op_names=[], no_need_clip_grads=None):
+        if no_need_clip_grads is None:
+            no_need_clip_grads = self.arguments["no_need_clip_grads"]
         def in_exclude_op_names(op_name):
             for exclude_name in exclude_op_names:
                 if exclude_name in op_name:
@@ -135,7 +145,10 @@ class BaseModel(object):
             grads_and_vars.extend(list(zip(grads, exclude_vars)))
         if need_clip_vars:
             grads = tf.gradients(loss, need_clip_vars)
-            clipped_grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
+            if no_need_clip_grads:
+                clipped_grads = grads
+            else:
+                clipped_grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
             grads_and_vars.extend(list(zip(clipped_grads, need_clip_vars)))
         return grads_and_vars
 
@@ -331,7 +344,7 @@ class BaseModel(object):
 
     def run_training(self, train_op, loss, acc=None, feed_dict=None, save_model_path=None, variables_to_restore=None,
                      pretrained_model_path=None):
-        loss_val = best_loss_val = 99999999
+        loss_val = best_loss_val = self.arguments["best_loss_val"]
         global_step_val = 0
         with tf.Session() as sess:
             model_saver, summary_writer, merged_summary, coodinator, threads, current_steps = self._initialize_process(sess, save_model_path)

@@ -40,13 +40,14 @@ class LanguageModelSequence(object):
         return []
 
 class EvalLanguageModel(object):
-    def __init__(self, language_model_seq, lm_lin_w, lm_lin_b):
+    def __init__(self, language_model_seq, lm_lin_w, lm_lin_b, rnnOutputToEmbedding):
         self.language_model_seq = language_model_seq
         self.index_to_embedding = self.language_model_seq.embedding_layer
         self.lstm_cell = self.language_model_seq.lstm_layer.cell
         # embed * w + b -> vocab
         self.lm_lin_w = lm_lin_w
         self.lm_lin_b = lm_lin_b
+        self.toEmbedding = rnnOutputToEmbedding
 
     def __call__(self, start_word_indexes, time_steps=200, initial_states=None, zero_states=False, dist=tf.random_uniform,
                  distargs={"minval": -1, "maxval": 1}):
@@ -64,6 +65,12 @@ class EvalLanguageModel(object):
         output_tensor_array = tf.TensorArray(tf.int64, size=time_steps)
         output_tensor_array = output_tensor_array.write(0, start_word_indexes)
         step_one_embedding = self.index_to_embedding(start_word_indexes)
+        # erase batch size
+        embed_size = step_one_embedding.get_shape()[1].value
+        step_one_embedding_shape = tf.shape(step_one_embedding)
+        step_one_embedding = tf.reshape(step_one_embedding, (step_one_embedding_shape[0], step_one_embedding_shape[1]))
+        # step_one_inputs (None, embed_size)
+        step_one_embedding.set_shape((None, embed_size))
         def step(time, output_ta_t, inputs, content_states):
             # content_outputs (batch_size, rnn_size)
             content_outputs, content_states = self.lstm_cell(inputs, content_states)
@@ -72,6 +79,10 @@ class EvalLanguageModel(object):
             # content_outputs (batch_size,)
             content_outputs_vocab = tf.argmax(content_outputs_vocab, axis=1)
             output_ta_t = output_ta_t.write(time + 1, content_outputs_vocab)
+            # content_outputs (batch_size, 1, rnn_size)
+            content_outputs = tf.expand_dims(content_outputs, 1)
+            # content_outputs (batch_size, embed_size)
+            content_outputs = tf.squeeze(self.toEmbedding(content_outputs), 1)
             return time + 1, output_ta_t, content_outputs, content_states
         final_outputs = tf.while_loop(cond=lambda time, *_: time < time_steps - 1, body=step,
                                       loop_vars=(time, output_tensor_array, step_one_embedding, initial_states),

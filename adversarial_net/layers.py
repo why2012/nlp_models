@@ -69,13 +69,14 @@ class LSTM(keras.layers.Layer):
     Exposes variables in `trainable_weights` property.
     """
 
-    def __init__(self, cell_size, num_layers=1, keep_prob=1., name = "lstm", **kwargs):
+    def __init__(self, cell_size, num_layers=1, keep_prob=1., forget_bias = 0.0, name = "lstm", **kwargs):
         super(LSTM, self).__init__(name=name, **kwargs)
         self.cell_size = cell_size
         self.num_layers = num_layers
         self.keep_prob = keep_prob
         self.reuse = None
         self.cell = None
+        self.forget_bias = forget_bias
 
     def build(self, input_shape):
         super(LSTM, self).build(input_shape)
@@ -83,7 +84,7 @@ class LSTM(keras.layers.Layer):
             cell = tf.contrib.rnn.MultiRNNCell([
               tf.contrib.rnn.BasicLSTMCell(
                   self.cell_size,
-                  forget_bias=0.0,
+                  forget_bias=self.forget_bias,
                   reuse=tf.get_variable_scope().reuse)
               for _ in range(self.num_layers)
             ])
@@ -107,55 +108,69 @@ class SoftmaxLoss(keras.layers.Layer):
     """Softmax xentropy loss with candidate sampling."""
 
     def __init__(self,
-               vocab_size,
-               num_candidate_samples=-1,
-               vocab_freqs=None,
+                 vocab_size,
+                 num_candidate_samples=-1,
+                 vocab_freqs=None,
+                 hard_mode=False,
+                 use_sampler=True,
                **kwargs):
         super(SoftmaxLoss, self).__init__(**kwargs)
         self.vocab_size = vocab_size
         self.num_candidate_samples = num_candidate_samples
         self.vocab_freqs = vocab_freqs
+        self.hard_mode = hard_mode
+        self.use_sampler = use_sampler
         self.lm_acc = None
 
     def build(self, input_shape):
-        input_shape = input_shape[0]
-        self.lin_w = self.add_weight(
-          shape=(self.vocab_size, input_shape[-1]),
-          name='lm_lin_w',
-          initializer=keras.initializers.glorot_uniform())
-        self.lin_b = self.add_weight(
-          shape=(self.vocab_size,),
-          name='lm_lin_b',
-          initializer=keras.initializers.glorot_uniform())
+        if self.hard_mode:
+            self.dense = keras.layers.Dense(self.vocab_size, activation='softmax', input_dim=input_shape[-1])
+        else:
+            input_shape = input_shape[0]
+            self.lin_w = self.add_weight(
+              shape=(self.vocab_size, input_shape[-1]),
+              name='lm_lin_w',
+              initializer=keras.initializers.glorot_uniform())
+            self.lin_b = self.add_weight(
+              shape=(self.vocab_size,),
+              name='lm_lin_b',
+              initializer=keras.initializers.glorot_uniform())
 
         super(SoftmaxLoss, self).build(input_shape)
 
     def call(self, inputs):
         x, labels, weights = inputs
-        assert self.num_candidate_samples > -1, "self.num_candidate_samples must > -1"
-        assert self.vocab_freqs is not None
         labels = tf.cast(labels, tf.int64)
         labels_reshaped = tf.reshape(labels, [-1])
-        labels_reshaped = tf.expand_dims(labels_reshaped, -1)
-        sampled = tf.nn.fixed_unigram_candidate_sampler(
-          true_classes=labels_reshaped,
-          num_true=1,
-          num_sampled=self.num_candidate_samples,
-          unique=True,
-          range_max=self.vocab_size,
-          unigrams=self.vocab_freqs)
         inputs_reshaped = tf.reshape(x, [-1, int(x.get_shape()[2])])
+        if self.hard_mode:
+            logits = self.dense(inputs_reshaped)
+            lm_loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels=labels_reshaped, logits=logits)
+            lm_loss = tf.reshape(lm_loss, [int(x.get_shape()[0]), int(x.get_shape()[1])])
+        else:
+            labels_reshaped = tf.expand_dims(labels_reshaped, -1)
+            assert self.num_candidate_samples > -1, "self.num_candidate_samples must > -1"
+            sampled = None
+            if self.use_sampler:
+                assert self.vocab_freqs is not None
+                sampled = tf.nn.fixed_unigram_candidate_sampler(
+                  true_classes=labels_reshaped,
+                  num_true=1,
+                  num_sampled=self.num_candidate_samples,
+                  unique=True,
+                  range_max=self.vocab_size,
+                  unigrams=self.vocab_freqs)
 
-        lm_loss = tf.nn.sampled_softmax_loss(
-          weights=self.lin_w,
-          biases=self.lin_b,
-          labels=labels_reshaped,
-          inputs=inputs_reshaped,
-          num_sampled=self.num_candidate_samples,
-          num_classes=self.vocab_size,
-          sampled_values=sampled)
-        lm_loss = tf.reshape(lm_loss, [int(x.get_shape()[0]), int(x.get_shape()[1])])
-        logits = tf.nn.bias_add(tf.matmul(inputs_reshaped, tf.transpose(self.lin_w)), self.lin_b)
+            lm_loss = tf.nn.sampled_softmax_loss(
+              weights=self.lin_w,
+              biases=self.lin_b,
+              labels=labels_reshaped,
+              inputs=inputs_reshaped,
+              num_sampled=self.num_candidate_samples,
+              num_classes=self.vocab_size,
+              sampled_values=sampled)
+            lm_loss = tf.reshape(lm_loss, [int(x.get_shape()[0]), int(x.get_shape()[1])])
+            logits = tf.nn.bias_add(tf.matmul(inputs_reshaped, tf.transpose(self.lin_w)), self.lin_b)
 
         self.lm_acc = tf.reduce_mean(tf.cast(tf.equal(tf.argmax(logits, axis=-1), labels_reshaped), tf.float32))
         lm_loss = tf.identity(tf.reduce_sum(lm_loss * weights) / num_labels(weights), name='lm_xentropy_loss')

@@ -747,7 +747,7 @@ class AdversarialDDGModel(BaseModel):
             self.train_step_vars["coodinator"] = coodinator
             self.train_step_vars["threads"] = threads
             self.train_step_vars["current_steps"] = current_steps
-            loss_val = self.train_step_vars["best_loss_val"] = 99999999
+            loss_val = self.train_step_vars["best_loss_val"] = self.arguments["best_loss_val"]
             self.restore_pretrained_variables(sess, save_model_path, pretrain_model_pathes)
             self._resotre_training_model(sess=sess, save_model_path=save_model_path)
             max_steps = self.arguments["max_steps"] + current_steps

@@ -29,6 +29,9 @@ flags.add_argument(name="eval_from", argtype=eval_from, default="generator")
 flags.add_argument(name="eval_batch_size", argtype=int, default=2)
 flags.add_argument(name="eval_topic_count", argtype=int, default=2)
 flags.add_argument(name="eval_seq_length", argtype=int, default=200)
+flags.add_argument(name="no_loss_sampler", argtype=bool, default=False)
+flags.add_argument(name="hard_mode", argtype=bool, default=False)
+flags.add_argument(name="forget_bias", argtype=float, default=0.0)
 
 # training process         (->embed)
 #                  |--> training lm_model |         (->embed)                 (lock embed)              (lock embed)               (->embed)
@@ -38,7 +41,7 @@ flags.add_argument(name="eval_seq_length", argtype=int, default=200)
 def train_lm_model(model_save_suffix = model_save_suffixes["train_lm_model"]):
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     lm_model = LanguageModel()
-    lm_model.build()
+    lm_model.build(use_sampler=not flags["no_loss_sampler"], hard_mode=flags["hard_mode"], forget_bias=flags["forget_bias"])
     lm_model.fit(save_model_path=save_model_path)
 
 def pre_train_cl_model(model_save_suffix = model_save_suffixes["pre_train_cl_model"]):
