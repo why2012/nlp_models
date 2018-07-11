@@ -18,5 +18,9 @@ python adversarial_net\train_adv_model.py --step eval_generator --save_model_dir
 
 python adversarial_net\train_adv_model.py --step eval_cl_model --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb --eval_from final_cl --inputs_eval_count_examples 50000
 
+python adversarial_net\train_adv_model.py --step eval_lm_model --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb
+
+python adversarial_net\train_adv_model.py --step eval_ae_model --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb
+
 from tensorflow.python.tools import inspect_checkpoint as chkp
 chkp.print_tensors_in_checkpoint_file("E:/kaggle/avito/imdb_testset/adversarial_net/model/lm_model/lm_model.ckpt-10", tensor_name='', all_tensors=True)

@@ -52,7 +52,7 @@ def configure():
     flags.add_argument(scope="vir_adv_loss", name="num_power_iteration", argtype=int, default=1)
     flags.add_argument(scope="vir_adv_loss", name="small_constant_for_finite_diff", argtype=float, default=1e-1)
 
-    flags.add_argument(scope="gan", name="critic_iters", argtype=int, default=10)
+    flags.add_argument(scope="gan", name="critic_iters", argtype=int, default=5)
     flags.add_argument(scope="gan", name="rnn_cell_size", argtype=int, default=256)
 
     flags.add_argument(name="phase", argtype=str, default="train")

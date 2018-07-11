@@ -39,6 +39,50 @@ class LanguageModelSequence(object):
     def pretrain_restorer(self):
         return []
 
+class EvalLanguageModel(object):
+    def __init__(self, language_model_seq, lm_lin_w, lm_lin_b):
+        self.language_model_seq = language_model_seq
+        self.index_to_embedding = self.language_model_seq.embedding_layer
+        self.lstm_cell = self.language_model_seq.lstm_layer.cell
+        # embed * w + b -> vocab
+        self.lm_lin_w = lm_lin_w
+        self.lm_lin_b = lm_lin_b
+
+    def __call__(self, start_word_indexes, time_steps=200, initial_states=None, zero_states=False, dist=tf.random_uniform,
+                 distargs={"minval": -1, "maxval": 1}):
+        batch_size = len(start_word_indexes)
+        if initial_states is None:
+            if zero_states:
+                initial_states = tuple([tf.contrib.rnn.LSTMStateTuple(tf.zeros((batch_size, c_size)),
+                                                                      tf.zeros((batch_size, h_size))) for
+                                        c_size, h_size in self.lstm_cell.state_size])
+            else:
+                initial_states = tuple([tf.contrib.rnn.LSTMStateTuple(dist((batch_size, c_size), **distargs),
+                                                                      dist((batch_size, h_size), **distargs)) for
+                                        c_size, h_size in self.lstm_cell.state_size])
+        time = tf.constant(0, dtype='int32', name='time')
+        output_tensor_array = tf.TensorArray(tf.int64, size=time_steps)
+        output_tensor_array = output_tensor_array.write(0, start_word_indexes)
+        step_one_embedding = self.index_to_embedding(start_word_indexes)
+        def step(time, output_ta_t, inputs, content_states):
+            # content_outputs (batch_size, rnn_size)
+            content_outputs, content_states = self.lstm_cell(inputs, content_states)
+            # content_outputs (batch_size, vocab_size)
+            content_outputs_vocab = tf.nn.bias_add(tf.matmul(content_outputs, self.lm_lin_w, transpose_b=True), self.lm_lin_b)
+            # content_outputs (batch_size,)
+            content_outputs_vocab = tf.argmax(content_outputs_vocab, axis=1)
+            output_ta_t = output_ta_t.write(time + 1, content_outputs_vocab)
+            return time + 1, output_ta_t, content_outputs, content_states
+        final_outputs = tf.while_loop(cond=lambda time, *_: time < time_steps - 1, body=step,
+                                      loop_vars=(time, output_tensor_array, step_one_embedding, initial_states),
+                                      parallel_iterations=32, swap_memory=True)
+        output_tensor_array = final_outputs[1]
+        # content_outputs (time_steps, batch_size)
+        content_outputs = output_tensor_array.stack()
+        # content_outputs (batch_size, time_steps)
+        content_outputs = tf.transpose(content_outputs, [1, 0])
+        return content_outputs
+
 class EmbeddingSequence(object):
     def __init__(self, var_scope_name, vocab_size, embedding_dim, vocab_freqs, normalize=True, keep_embed_prob=1):
         with tf.variable_scope(var_scope_name):

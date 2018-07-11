@@ -13,7 +13,7 @@ from adversarial_net.inputs import construct_language_model_input_tensor_with_st
 from adversarial_net.inputs import construct_classification_model_input_tensor_with_state
 from adversarial_net.inputs import construct_autoencoder_model_input_tensor_with_state
 from adversarial_net import osp
-from adversarial_net.inputs import DataLoader
+from adversarial_net.inputs import DataLoader, getDatasetFilePath
 
 logger = getLogger("adv_model")
 EOS_TAG = 2
@@ -698,7 +698,10 @@ class AdversarialDDGModel(BaseModel):
             threads = tf.train.start_queue_runners(sess, coodinator)
             self._resotre_training_model(sess=sess, save_model_path=save_model_path)
             if self.stepTag == "eval_seq":
-                wordCounter = DataLoader.reload_word_counter(base_dir=self.arguments["inputs"]["datapath"])
+                wordCounter = DataLoader.reload_word_counter(
+                    vocab_abspath=getDatasetFilePath(self.arguments["inputs"]["datapath"],
+                                                     self.arguments["inputs"]["dataset"],
+                                                     "word_freqs"))
                 seq_X = eval_graph["seq_X"]
                 seq_y = eval_graph["seq_y"]
                 seq_X_val, seq_y_val = sess.run([seq_X, seq_y])

@@ -18,6 +18,8 @@ def getDatasetFilePath(datapath, dataset, modelname):
             return osp.join(datapath, "imdb_classification_dataset.pickle")
         elif modelname == "autoencoder_model":
             return osp.join(datapath, "imdb_ae_dataset.pickle")
+        elif modelname == "word_freqs":
+            return osp.join(datapath, "imdb_word_freqs.pickle")
 
 class DataLoader(object):
     def __init__(self, base_dir, dataset):
@@ -40,9 +42,8 @@ class DataLoader(object):
             return training_dataset, testing_dataset
 
     @classmethod
-    def reload_word_counter(cls, base_dir, vocab_filename="imdb_word_freqs.pickle"):
+    def reload_word_counter(cls, vocab_abspath):
         wordCounter = WordCounter()
-        vocab_abspath = osp.join(base_dir, vocab_filename)
         with open(vocab_abspath, "rb") as f:
             wordCounter.words_list = pickle.load(f)
         return wordCounter

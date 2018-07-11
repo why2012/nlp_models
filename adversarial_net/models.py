@@ -2,6 +2,8 @@ from __future__ import division
 from __future__ import absolute_import
 from __future__ import print_function
 import tensorflow as tf
+import numpy as np
+from adversarial_net.inputs import DataLoader, getDatasetFilePath
 from adversarial_net.engine import BaseModel
 from adversarial_net import arguments as flags
 from adversarial_net import sequences as seq
@@ -48,6 +50,34 @@ class LanguageModel(BaseModel):
                                       self.arguments["lr"], self.arguments["lr_decay"], lock_embedding=self.lock_embedding)
         super(LanguageModel, self).build()
 
+    def eval(self, save_model_path, batch_size = 2, seq_len = 200):
+        wordCounter = DataLoader.reload_word_counter(
+            vocab_abspath=getDatasetFilePath(self.arguments["inputs"]["datapath"], self.arguments["inputs"]["dataset"],
+                                             "word_freqs"))
+        words_list = np.array(wordCounter.words_list)
+        words = words_list[:, 0]
+        freqs = words_list[:, 1]
+        vocab_size = self.arguments["lm_sequence"]["vocab_size"]
+        freqs = freqs[:vocab_size].astype(np.float32)
+        freqs[:100] = 0
+        freqs /= np.sum(freqs)
+        choosed_words_index = np.random.choice(vocab_size, batch_size, p=freqs)
+        choosed_words = words[choosed_words_index]
+        # add up special tokens index
+        choosed_words_index += 3
+        self.loss_layer.build([(-1, self.arguments["lm_sequence"]["rnn_cell_size"])])
+        self.eval_lm_model = seq.EvalLanguageModel(language_model_seq=self.sequences["lm_sequence"],
+                                                   lm_lin_w=self.loss_layer.lin_w, lm_lin_b=self.loss_layer.lin_b)
+        generated_sequences = self.eval_lm_model(start_word_indexes=choosed_words_index, time_steps=seq_len)
+        with tf.Session() as sess:
+            self._resotre_training_model(sess=sess, save_model_path=save_model_path)
+            generated_sequences_val = sess.run(generated_sequences)
+        generated_sentences = wordCounter.reverse(indices=generated_sequences_val, num_words=vocab_size)
+        logger.info("choosed words: %s " % choosed_words)
+        for sentence in generated_sentences:
+            logger.info(sentence)
+            logger.info("-" * 100)
+
     def fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None):
         variables_to_restore = []
         for variable in self.trainable_weights():
@@ -91,6 +121,25 @@ class AutoEncoderModel(BaseModel):
         self.train_op = self.optimize(self.loss, self.arguments["max_grad_norm"],
                                       self.arguments["lr"], self.arguments["lr_decay"], lock_embedding=self.lock_embedding)
         super(AutoEncoderModel, self).build()
+
+    def eval(self, save_model_path, batch_size = 2, seq_len = 200):
+        wordCounter = DataLoader.reload_word_counter(
+            vocab_abspath=getDatasetFilePath(self.arguments["inputs"]["datapath"], self.arguments["inputs"]["dataset"],
+                                             "word_freqs"))
+        vocab_size = self.arguments["ae_sequence"]["vocab_size"]
+        EOS_TAG = 2
+        choosed_words_index = np.array([EOS_TAG] * batch_size).astype(np.int64)
+        self.loss_layer.build([(-1, self.arguments["ae_sequence"]["rnn_cell_size"])])
+        self.eval_lm_model = seq.EvalLanguageModel(language_model_seq=self.sequences["ae_sequence"],
+                                                   lm_lin_w=self.loss_layer.lin_w, lm_lin_b=self.loss_layer.lin_b)
+        generated_sequences = self.eval_lm_model(start_word_indexes=choosed_words_index, time_steps=seq_len)
+        with tf.Session() as sess:
+            self._resotre_training_model(sess=sess, save_model_path=save_model_path)
+            generated_sequences_val = sess.run(generated_sequences)
+        generated_sentences = wordCounter.reverse(indices=generated_sequences_val, num_words=vocab_size)
+        for sentence in generated_sentences:
+            logger.info(sentence)
+            logger.info("-" * 100)
 
     def fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None):
         variables_to_restore = []

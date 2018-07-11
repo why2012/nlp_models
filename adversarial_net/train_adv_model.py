@@ -6,7 +6,7 @@ from adversarial_net import arguments as flags
 from adversarial_net.preprocessing import WordCounter
 from adversarial_net import osp
 training_step_vals = ["train_lm_model", "pretrain_cl_model", "train_ae_model", "train_generator", "train_topic_generator",
-                      "train_cl_model", "eval_generator", "eval_cl_model"]
+                      "train_cl_model", "eval_generator", "eval_cl_model", "eval_lm_model", "eval_ae_model"]
 model_save_suffixes = {
     "train_lm_model": "lm_model/lm_model.ckpt",
     "pre_train_cl_model": "adv_cl_model/adv_cl_model.ckpt",
@@ -130,6 +130,16 @@ def eval_cl_model():
     generator_model.build(eval_cl=True)
     generator_model.eval(save_model_path=save_model_path)
 
+def eval_lm_model(model_save_suffix = model_save_suffixes["train_lm_model"]):
+    save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
+    lm_model = LanguageModel()
+    lm_model.eval(save_model_path=save_model_path)
+
+def eval_ae_model(model_save_suffix = model_save_suffixes["train_ae_model"]):
+    save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
+    ae_model = AutoEncoderModel()
+    ae_model.eval(save_model_path=save_model_path)
+
 if __name__ == "__main__":
     vocab_freqs = WordCounter().load(
         osp.join(flags["lm_inputs"]["datapath"], "imdb_word_freqs.pickle")).most_common_freqs(
@@ -152,3 +162,7 @@ if __name__ == "__main__":
     elif flags.step == "eval_cl_model":
         # "--inputs_eval_count_examples" is required
         eval_cl_model()
+    elif flags.step == "eval_lm_model":
+        eval_lm_model()
+    elif flags.step == "eval_ae_model":
+        eval_ae_model()
