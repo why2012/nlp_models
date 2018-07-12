@@ -6,7 +6,8 @@ python adversarial_net\train_adv_model.py --step train_lm_model --lm_sequence_ke
 
 python adversarial_net\train_adv_model.py --step train_ae_model --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --pretrain_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb --max_steps 10 --eval_steps 1
 
-python adversarial_net\train_adv_model.py --step pretrain_cl_model --lm_sequence_keep_embed_prob 0.5  --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --pretrain_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb --max_steps 10 --eval_steps 1 --eval_acc
+# python adversarial_net\train_adv_model.py --step pretrain_cl_model --lm_sequence_keep_embed_prob 0.5  --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --pretrain_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb --max_steps 10 --eval_steps 1 --eval_acc
+python adversarial_net\train_adv_model.py --step pretrain_cl_model --lm_sequence_keep_embed_prob 0.5  --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --pretrain_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb --max_steps 15000 --eval_acc --inputs_batch_size 64 --lr 0.0005 --lr_decay 0.9998
 
 python adversarial_net\train_adv_model.py --step train_generator --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --pretrain_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data --inputs_dataset imdb --max_steps 10 --eval_steps 1  --eval_acc --inputs_batch_size 50
 

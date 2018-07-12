@@ -15,6 +15,29 @@ model_save_suffixes = {
     "train_topic_generator": "topic_generator/topic_generator.ckpt",
     "train_cl_model": "final_cl_model/final_cl_model.ckpt"
 }
+class ModelPrefixManager(object):
+    NO_PREIFX_TAG = "[no_prefix]"
+    def __init__(self, suffix_map):
+        self.suffix_map = suffix_map
+        self.suffix_choice = None
+    def __getitem__(self, item):
+        no_prefix_tag = False
+        if item.startswith(self.NO_PREIFX_TAG):
+            item = item[len(self.NO_PREIFX_TAG):]
+            no_prefix_tag = True
+        if flags["model_prefix"] is None:
+            if self.suffix_choice is None:
+                self.suffix_choice = input("Model prefix is not provided, continue (Y/N): ").strip().upper()
+            if self.suffix_choice == "Y":
+                return self.suffix_map[item]
+            else:
+                exit(0)
+        else:
+            if no_prefix_tag:
+                return self.suffix_map[item]
+            else:
+                return "{prefix}_{suffix}".format(prefix=flags["model_prefix"], suffix=self.suffix_map[item])
+model_save_suffixes = ModelPrefixManager(suffix_map=model_save_suffixes)
 def training_step(value):
     assert value in training_step_vals, "step is one of %s" % training_step_vals
     return value
@@ -33,6 +56,8 @@ flags.add_argument(name="eval_seq_length", argtype=int, default=200)
 flags.add_argument(name="no_loss_sampler", argtype=bool, default=False)
 flags.add_argument(name="hard_mode", argtype=bool, default=False)
 flags.add_argument(name="forget_bias", argtype=float, default=0.0)
+# model prefix
+flags.add_argument(name="model_prefix", argtype=str, default=None)
 
 # training process         (->embed)
 #                  |--> training lm_model |         (->embed)                 (lock embed)              (lock embed)               (->embed)
@@ -49,8 +74,8 @@ def pre_train_cl_model(model_save_suffix = model_save_suffixes["pre_train_cl_mod
     assert flags.pretrain_model_dir, "pretrain_model_dir is required"
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     pretrained_model_pathes = {
-        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
-        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"])
+        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]train_lm_model"]),
+        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]train_lm_model"])
     }
     adv_cl_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepB_modules)
     adv_cl_model.build(stepB=True, restorer_tag_notifier=[])
