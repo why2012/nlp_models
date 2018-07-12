@@ -29,6 +29,7 @@ flags.add_argument(name="eval_from", argtype=eval_from, default="generator")
 flags.add_argument(name="eval_batch_size", argtype=int, default=2)
 flags.add_argument(name="eval_topic_count", argtype=int, default=2)
 flags.add_argument(name="eval_seq_length", argtype=int, default=200)
+# lm/ae model args
 flags.add_argument(name="no_loss_sampler", argtype=bool, default=False)
 flags.add_argument(name="hard_mode", argtype=bool, default=False)
 flags.add_argument(name="forget_bias", argtype=float, default=0.0)
@@ -60,7 +61,7 @@ def train_ae_model(model_save_suffix=model_save_suffixes["train_ae_model"]):
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     pretrained_model_path = osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"])
     ae_model = AutoEncoderModel(lock_embedding=True)
-    ae_model.build()
+    ae_model.build(use_sampler=not flags["no_loss_sampler"], hard_mode=flags["hard_mode"], forget_bias=flags["forget_bias"])
     ae_model.fit(save_model_path=save_model_path, pretrained_model_path=pretrained_model_path)
 
 def train_generator(model_save_suffix=model_save_suffixes["train_generator"]):

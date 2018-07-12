@@ -183,7 +183,8 @@ class RnnOutputToEmbedding(keras.layers.Layer):
         super(RnnOutputToEmbedding, self).__init__(**kwargs)
         self.vocab_size = vocab_size
         # embedding_weights (vocab_size, embed_size)
-        self.embedding_weights = embedding_weights
+        # avoid extra gradients flow
+        self.embedding_weights = tf.stop_gradient(embedding_weights)
         # var_w (vocab_size, rnn_size)
         self.var_w = var_w
         # var_b (vocab_size)
@@ -220,7 +221,8 @@ class RnnOutputToEmbedding(keras.layers.Layer):
         if not only_logits:
             indices = tf.stack([tf.range(batch_size * seq_length), maximum_indices], 1)
             indices = tf.cast(indices, tf.int64)
-            values = tf.gather_nd(vocab_logits, indices)
+            # values = tf.gather_nd(vocab_logits, indices)
+            values = tf.ones(shape=(tf.shape(vocab_logits)[0],))
             # sparse_vocab_logits sparse(batch_size * seq_length, vocab_size)
             sparse_vocab_logits = tf.SparseTensor(indices, values, tf.shape(vocab_logits, out_type=tf.int64))
             # embedding (batch_size * seq_length, embed_size)

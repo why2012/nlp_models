@@ -66,6 +66,7 @@ class LanguageModel(BaseModel):
         freqs = freqs[:vocab_size].astype(np.float32)
         freqs[:10] = 0
         freqs /= np.sum(freqs)
+        freqs = None
         choosed_words_index = np.random.choice(vocab_size, batch_size, p=freqs).astype(np.int64)
         choosed_words = words[choosed_words_index]
         # add up special tokens index
@@ -110,7 +111,7 @@ class AutoEncoderModel(BaseModel):
         self.loss = None
         self.acc = None
 
-    def build(self):
+    def build(self, use_sampler = True, hard_mode = False, forget_bias = 0.0):
         # X_tensor (None, steps)
         # y_tensor (None, steps)
         # weight_tensor (None, steps)
@@ -125,6 +126,11 @@ class AutoEncoderModel(BaseModel):
         y_hat_output_tensor = output_tensor
         y_real_tensor = y_tensor
         weight_real_tensor = weight_tensor
+
+        self.loss_layer.use_sampler = use_sampler
+        self.loss_layer.hard_mode = hard_mode
+        self.sequences["ae_sequence"].lstm_layer.forget_bias = forget_bias
+
         self.loss = self.loss_layer((y_hat_output_tensor, y_real_tensor, weight_real_tensor))
         self.acc = self.loss_layer.lm_acc
         with tf.control_dependencies([self.save_lstm_state(final_state)]):
