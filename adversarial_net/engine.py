@@ -298,14 +298,16 @@ class BaseModel(object):
                 logger.info("save best to {}".format(save_model_path))
                 model_saver.save(sess, save_model_path, global_step_val)
                 best_loss_val = loss_val
+                with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
+                    recordf.write("step-loss: %s - %s\n" % (global_step_val, best_loss_val))
             # save model per save_steps
             if not self.arguments["save_best"] and global_step_val % self.arguments["save_steps"] == 0:
                 logger.info("save model.")
                 model_saver.save(sess, save_model_path, global_step_val)
                 if loss_val < best_loss_val:
                     best_loss_val = loss_val
-            with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
-                recordf.write("step-loss: %s - %s\n" % (global_step_val, best_loss_val))
+                    with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
+                        recordf.write("step-loss: %s - %s\n" % (global_step_val, best_loss_val))
         return best_loss_val
 
     def _initialize_process(self, sess, save_model_path):
@@ -328,12 +330,14 @@ class BaseModel(object):
             if not self.arguments["save_best"]:
                 logger.info("save model.")
                 model_saver.save(sess, save_model_path, global_step_val)
+                with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
+                    recordf.write("step-loss: %s - %s\n" % (global_step_val, loss_val))
             else:
                 if global_step_val % self.arguments["save_best_check_steps"] != 0 and loss_val < best_loss_val:
                     logger.info("save model.")
                     model_saver.save(sess, save_model_path, global_step_val)
-            with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
-                recordf.write("step-loss: %s - %s\n" % (global_step_val, best_loss_val))
+                    with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
+                        recordf.write("step-loss: %s - %s\n" % (global_step_val, loss_val))
 
     def make_restore_average_vars_dict(self, variables):
         var_restore_dict = {}
