@@ -234,12 +234,12 @@ class AdversarialDDGModel(BaseModel):
         logits = dense_fn(final_output_tensor)
         return logits, final_states
 
-    def compute_adv_loss(self, cl_loss, embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn):
+    def compute_adv_loss(self, logits, cl_loss, embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn, eos_indicators):
         def local_compute_cl_loss(perturbed_embedding):
             cl_loss, final_states = self.compute_cl_loss(perturbed_embedding, y_tensor, weight_tensor, sequence_len, laststep_gather_indices, get_lstm_state_fn, seq2seq_fn, dense_fn)
             return cl_loss
         adv_loss = self.adversarial_loss(cl_loss, local_compute_cl_loss, embedding)
-        return adv_loss
+        return adv_loss * tf.constant(self.arguments["adv_cl_loss"]["adv_reg_coeff"], name='adv_reg_coeff')
 
     def get_genuing_inputs(self):
         if not hasattr(self, "_genuing_inputs_cache"):
@@ -371,9 +371,10 @@ class AdversarialDDGModel(BaseModel):
                                                                                             g_laststep_gather_indices, g_get_lstm_state,
                                                                                             self.topic_discriminator_seq2seq, self.topic_discriminator_dense,
                                                                                             return_logits=True)
-            genuing_adv_loss = self.compute_adv_loss(genuing_cl_loss, g_embedding, g_y_tensor, g_weight_tensor,
+            genuing_adv_loss = self.compute_adv_loss(genuing_cl_logits, genuing_cl_loss, g_embedding, g_y_tensor, g_weight_tensor,
                                                      g_seq_length, g_laststep_gather_indices, g_get_lstm_state,
-                                                     self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
+                                                     self.topic_discriminator_seq2seq, self.topic_discriminator_dense,
+                                                     g_eos_indicators)
             genuing_total_loss = genuing_cl_loss + genuing_adv_loss
             genuing_cl_acc = layers.accuracy(genuing_cl_logits, g_y_tensor, tf.gather_nd(g_weight_tensor, g_laststep_gather_indices))
             tf.summary.scalar('genuing_adv_loss', genuing_adv_loss)
@@ -399,9 +400,10 @@ class AdversarialDDGModel(BaseModel):
                                                                                    self.topic_discriminator_seq2seq, self.topic_discriminator_dense,
                                                                                    return_logits=True)
             if genuing_discriminator:
-                fake_adv_loss = self.compute_adv_loss(fake_cl_loss, s_embedding, s_y_tensor, s_weight_tensor,
-                                                         s_seq_length, s_laststep_gather_indices, s_get_lstm_state,
-                                                         self.topic_discriminator_seq2seq, self.topic_discriminator_dense)
+                fake_adv_loss = self.compute_adv_loss(fake_cl_logits, fake_cl_loss, s_embedding, s_y_tensor, s_weight_tensor,
+                                                      s_seq_length, s_laststep_gather_indices, s_get_lstm_state,
+                                                      self.topic_discriminator_seq2seq, self.topic_discriminator_dense,
+                                                      s_eos_indicators)
                 fake_total_loss = fake_cl_loss + fake_adv_loss
                 # no need to evaluate adv_loss when training generator
                 tf.summary.scalar('fake_adv_loss', fake_adv_loss)

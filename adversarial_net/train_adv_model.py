@@ -2,9 +2,12 @@ import sys
 sys.path.insert(0, ".")
 from adversarial_net.models import LanguageModel, AutoEncoderModel
 from adversarial_net.AdversarialDDGModel import AdversarialDDGModel
+from adversarial_net.VirtualAdversarialDDGModel import VirtualAdversarialDDGModel
 from adversarial_net import arguments as flags
 from adversarial_net.preprocessing import WordCounter
 from adversarial_net import osp
+from adversarial_net.utils import getLogger
+logger = getLogger("train_model")
 training_step_vals = ["train_lm_model", "pretrain_cl_model", "train_ae_model", "train_generator", "train_topic_generator",
                       "train_cl_model", "eval_generator", "eval_cl_model", "eval_lm_model", "eval_ae_model"]
 model_save_suffixes = {
@@ -21,6 +24,9 @@ class ModelPrefixManager(object):
         self.suffix_map = suffix_map
         self.suffix_choice = None
     def __getitem__(self, item):
+        if flags["model_prefix"] is None and flags["adv_type"] != "adv":
+            logger.error("model_prefix is required when adv_type != adv (default)")
+            exit(0)
         no_prefix_tag = False
         if item.startswith(self.NO_PREIFX_TAG):
             item = item[len(self.NO_PREIFX_TAG):]
@@ -45,6 +51,10 @@ def eval_from(value):
     eval_from_vals = ["generator", "topic_generator", "pretrain_cl", "final_cl"]
     assert value in eval_from_vals, "step is one of %s" % eval_from_vals
     return value
+def adv_type(value):
+    adv_types = ["adv", "vir_adv"]
+    assert value in adv_types, "adv_type is one of %s" % adv_types
+    return value
 flags.add_argument(name="step", argtype=training_step)
 flags.add_argument(name="save_model_dir", argtype=str)
 flags.add_argument(name="pretrain_model_dir", argtype=str, default=None)
@@ -58,6 +68,8 @@ flags.add_argument(name="hard_mode", argtype=bool, default=False)
 flags.add_argument(name="forget_bias", argtype=float, default=0.0)
 # model prefix
 flags.add_argument(name="model_prefix", argtype=str, default=None)
+# adversarial training type
+flags.add_argument(name="adv_type", argtype=adv_type, default="adv")
 
 # training process         (->embed)
 #                  |--> training lm_model |         (->embed)                 (lock embed)              (lock embed)               (->embed)
@@ -77,7 +89,12 @@ def pre_train_cl_model(model_save_suffix = model_save_suffixes["pre_train_cl_mod
         "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]train_lm_model"]),
         "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]train_lm_model"])
     }
-    adv_cl_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepB_modules)
+    if flags["adv_type"] == "adv":
+        adv_cl_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepB_modules)
+    elif flags["adv_type"] == "vir_adv":
+        adv_cl_model = VirtualAdversarialDDGModel(init_modules=VirtualAdversarialDDGModel.stepB_modules)
+    else:
+        raise Exception("Unknow adv_type: %s" % flags["adv_type"])
     adv_cl_model.build(stepB=True, restorer_tag_notifier=[])
     adv_cl_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
@@ -93,13 +110,18 @@ def train_generator(model_save_suffix=model_save_suffixes["train_generator"]):
     assert flags.pretrain_model_dir, "pretrain_model_dir is required"
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     pretrained_model_pathes = {
-        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
-        "FG_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
+        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
+        "FG_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]train_lm_model"]),
         "SEQ_G_LSTM_1": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_ae_model"]),
         "RNN_TO_EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
     }
-    generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepA_modules)
+    if flags["adv_type"] == "adv":
+        generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepA_modules)
+    elif flags["adv_type"] == "vir_adv":
+        generator_model = VirtualAdversarialDDGModel(init_modules=VirtualAdversarialDDGModel.stepA_modules)
+    else:
+        raise Exception("Unknow adv_type: %s" % flags["adv_type"])
     generator_model.build(stepA=True, restorer_tag_notifier=["EMBEDDING"])
     generator_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
@@ -107,14 +129,19 @@ def train_topic_generator(model_save_suffix=model_save_suffixes["train_topic_gen
     assert flags.pretrain_model_dir, "pretrain_model_dir is required"
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     pretrained_model_pathes = {
-        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
-        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
-        "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
+        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
+        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
+        "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
         "SEQ_G_LSTM_1": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
         "RNN_TO_EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
     }
-    generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepC_modules)
+    if flags["adv_type"] == "adv":
+        generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepC_modules)
+    elif flags["adv_type"] == "vir_adv":
+        generator_model = VirtualAdversarialDDGModel(init_modules=VirtualAdversarialDDGModel.stepC_modules)
+    else:
+        raise Exception("Unknow adv_type: %s" % flags["adv_type"])
     generator_model.build(stepC=True, restorer_tag_notifier=["EMBEDDING", "T_S", "T_D", "SEQ_G_LSTM", "RNN_TO_EMBEDDING"])
     generator_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
@@ -122,14 +149,19 @@ def train_cl_model(model_save_suffix=model_save_suffixes["train_cl_model"]):
     assert flags.pretrain_model_dir, "pretrain_model_dir is required"
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     pretrained_model_pathes = {
-        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
-        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
-        "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
+        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
+        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
+        "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
         "SEQ_G_LSTM_1": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
         "RNN_TO_EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
     }
-    generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepD_modules)
+    if flags["adv_type"] == "adv":
+        generator_model = AdversarialDDGModel(init_modules=AdversarialDDGModel.stepD_modules)
+    elif flags["adv_type"] == "vir_adv":
+        generator_model = VirtualAdversarialDDGModel(init_modules=VirtualAdversarialDDGModel.stepD_modules)
+    else:
+        raise Exception("Unknow adv_type: %s" % flags["adv_type"])
     generator_model.build(stepD=True, restorer_tag_notifier=["EMBEDDING", "T_S", "T_D", "SEQ_G_LSTM", "RNN_TO_EMBEDDING"])
     generator_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
@@ -150,8 +182,8 @@ def eval_generator(eval_batch_size = flags["eval_batch_size"], eval_topic_count 
 def eval_cl_model():
     eval_from_vals = ["pretrain_cl", "final_cl"]
     assert flags.eval_from in eval_from_vals, "eval_from must be one of %s" % eval_from_vals
-    if flags.eval_from == "generator":
-        model_save_suffix = model_save_suffixes["train_generator"]
+    if flags.eval_from == "final_cl":
+        model_save_suffix = model_save_suffixes["train_cl_model"]
     else:
         model_save_suffix = model_save_suffixes["pre_train_cl_model"]
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)

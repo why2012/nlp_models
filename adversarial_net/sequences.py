@@ -231,7 +231,7 @@ class VirtualAdversarialLoss(AdversarialLoss):
         # kl (None, )
         kl = tf.reduce_sum(q * (tf.nn.log_softmax(q_logits) - tf.nn.log_softmax(p_logits)), -1)
         num_labels = tf.reduce_sum(weights)
-        num_labels = tf.where(tf.equal(num_labels, 0.), 1., _num_labels)
+        num_labels = tf.where(tf.equal(num_labels, 0.), 1., num_labels)
         loss = tf.identity(tf.reduce_sum(weights * kl) / num_labels, name='kl_loss')
         return loss
 
