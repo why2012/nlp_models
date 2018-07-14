@@ -153,7 +153,7 @@ class ArgumentsBuilder(object):
         except:
             return False
 
-    def __getitem__(self, name_or_scope, assoc_find = False):
+    def __getitem__(self, name_or_scope, assoc_find = False, last_scopes = set()):
         if not self.built:
             self.build()
         if name_or_scope in self.scope_arguments or name_or_scope in self.scope_variables or name_or_scope in self.scope_associations:
@@ -162,15 +162,26 @@ class ArgumentsBuilder(object):
                 args[name[len(name_or_scope) + 1: ]] = self.arguments[name]
             for name in self.scope_variables[name_or_scope]:
                 args[name[len(name_or_scope) + 1: ]] = self.variables[name]
+            bak_last_scopes = last_scopes
             for name in self.scope_associations[name_or_scope]:
+                last_scopes = bak_last_scopes.copy()
                 if isinstance(self.associations[name], list):
                     assoc_scope = self.associations[name][0]
                     assoc_name = self.associations[name][1]
-                    value = self.__getitem__(assoc_scope, assoc_find=True)
-                    if value and assoc_name in value:
-                        value = value[assoc_name]
+                    # detect cross scope recursive association
+                    # a -> b -> c -> a
+                    last_scopes.add(name_or_scope)
+                    if assoc_scope in last_scopes:
+                        continue
+                    # inner scope association
+                    if assoc_scope == name_or_scope:
+                        value = args[assoc_name]
                     else:
-                        value = None
+                        value = self.__getitem__(assoc_scope, assoc_find=True, last_scopes=last_scopes)
+                        if value and assoc_name in value:
+                            value = value[assoc_name]
+                        else:
+                            value = None
                 else:
                     value = self.__getitem__(self.associations[name], assoc_find=True)
                 if value is not None:

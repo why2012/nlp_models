@@ -106,7 +106,7 @@ def train_ae_model(model_save_suffix=model_save_suffixes["train_ae_model"]):
     ae_model.build(use_sampler=not flags["no_loss_sampler"], hard_mode=flags["hard_mode"], forget_bias=flags["forget_bias"])
     ae_model.fit(save_model_path=save_model_path, pretrained_model_path=pretrained_model_path)
 
-def train_generator(model_save_suffix=model_save_suffixes["train_generator"]):
+def train_generator(model_save_suffix=model_save_suffixes["[no_prefix]train_generator"]):
     assert flags.pretrain_model_dir, "pretrain_model_dir is required"
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     pretrained_model_pathes = {
@@ -129,9 +129,9 @@ def train_topic_generator(model_save_suffix=model_save_suffixes["train_topic_gen
     assert flags.pretrain_model_dir, "pretrain_model_dir is required"
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     pretrained_model_pathes = {
-        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
-        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
-        "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
+        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
+        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
+        "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
         "SEQ_G_LSTM_1": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
         "RNN_TO_EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_generator"]),
@@ -149,9 +149,9 @@ def train_cl_model(model_save_suffix=model_save_suffixes["train_cl_model"]):
     assert flags.pretrain_model_dir, "pretrain_model_dir is required"
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     pretrained_model_pathes = {
-        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
-        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
-        "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]pre_train_cl_model"]),
+        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
+        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
+        "T_D": osp.join(flags.pretrain_model_dir, model_save_suffixes["pre_train_cl_model"]),
         "SEQ_G_LSTM_1": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
         "SEQ_G_LSTM_2": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
         "RNN_TO_EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_topic_generator"]),
