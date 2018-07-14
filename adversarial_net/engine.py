@@ -303,7 +303,7 @@ class BaseModel(object):
                     recordf.write("step-loss: %s - %s\n" % (global_step_val, best_loss_val))
             # save model per save_steps
             if not self.arguments["save_best"] and global_step_val % self.arguments["save_steps"] == 0:
-                logger.info("save model.")
+                logger.info("save model to {}".format(save_model_path))
                 model_saver.save(sess, save_model_path, global_step_val)
                 if loss_val < best_loss_val:
                     best_loss_val = loss_val

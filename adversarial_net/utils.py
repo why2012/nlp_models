@@ -172,10 +172,11 @@ class ArgumentsBuilder(object):
                     # a -> b -> c -> a
                     last_scopes.add(name_or_scope)
                     if assoc_scope in last_scopes:
-                        continue
-                    # inner scope association
-                    if assoc_scope == name_or_scope:
-                        value = args[assoc_name]
+                        # inner scope association
+                        if assoc_scope == name_or_scope:
+                            value = args[assoc_name]
+                        else:
+                            continue
                     else:
                         value = self.__getitem__(assoc_scope, assoc_find=True, last_scopes=last_scopes)
                         if value and assoc_name in value:
