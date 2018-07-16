@@ -77,6 +77,7 @@ def configure():
     flags.add_argument(name="no_need_clip_grads", argtype=bool, default=False)
     # continue from break point
     flags.add_argument(name="best_loss_val", argtype=float, default=99999999.0)
+    flags.add_argument(name="extra_save_dir", argtype=str, default=None)
 configure()
 
 class VariableManager(object):
@@ -105,6 +106,23 @@ class BaseModel(object):
         self.timeline_dir = self.arguments["tf_timeline_dir"]
         self.model_name = self.__class__.__name__
         self.var_manager = VariableManager()
+        self.extra_save_path = self.arguments["extra_save_dir"]
+
+    def _get_save_path(self, save_model_path):
+        original_save_model_path, filepath = save_model_path.rsplit("/", 1)
+        if self.extra_save_path:
+            extra_save_model_path = osp.join(original_save_model_path, self.extra_save_path)
+            extra_save_model_path = osp.join(extra_save_model_path, filepath)
+        else:
+            extra_save_model_path = None
+        original_save_model_path = osp.join(original_save_model_path, filepath)
+        if self.arguments["save_best"]:
+            save_best_path = original_save_model_path
+            save_steps_path = extra_save_model_path
+        else:
+            save_steps_path = original_save_model_path
+            save_best_path = extra_save_model_path
+        return save_best_path, save_steps_path
 
     def build(self):
         self.built = True
@@ -293,21 +311,22 @@ class BaseModel(object):
 
     def _save_model_step(self, sess, model_saver, save_model_path, loss_val, best_loss_val, global_step_val):
         if save_model_path is not None:
+            save_best_path, save_steps_path = self._get_save_path(save_model_path)
             # save best
-            if self.arguments["save_best"] and loss_val < best_loss_val and global_step_val % self.arguments[
+            if (self.arguments["save_best"] or self.extra_save_path) and loss_val < best_loss_val and global_step_val % self.arguments[
                 "save_best_check_steps"] == 0:
-                logger.info("save best to {}".format(save_model_path))
-                model_saver.save(sess, save_model_path, global_step_val)
+                logger.info("save best to {}".format(save_best_path))
+                model_saver.save(sess, save_best_path, global_step_val)
                 best_loss_val = loss_val
-                with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
+                with open(osp.join(osp.dirname(save_best_path), "best_loss_records.txt"), "a+") as recordf:
                     recordf.write("step-loss: %s - %s\n" % (global_step_val, best_loss_val))
             # save model per save_steps
-            if not self.arguments["save_best"] and global_step_val % self.arguments["save_steps"] == 0:
-                logger.info("save model to {}".format(save_model_path))
-                model_saver.save(sess, save_model_path, global_step_val)
+            if (not self.arguments["save_best"] or self.extra_save_path) and global_step_val % self.arguments["save_steps"] == 0:
+                logger.info("save model to {}".format(save_steps_path))
+                model_saver.save(sess, save_steps_path, global_step_val)
                 if loss_val < best_loss_val:
                     best_loss_val = loss_val
-                    with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
+                    with open(osp.join(osp.dirname(save_steps_path), "best_loss_records.txt"), "a+") as recordf:
                         recordf.write("step-loss: %s - %s\n" % (global_step_val, best_loss_val))
         return best_loss_val
 
@@ -328,16 +347,17 @@ class BaseModel(object):
         coodinator.request_stop()
         coodinator.join(threads)
         if save_model_path is not None:
-            if not self.arguments["save_best"]:
+            save_best_path, save_steps_path = self._get_save_path(save_model_path)
+            if not self.arguments["save_best"] or self.extra_save_path:
                 logger.info("save model.")
-                model_saver.save(sess, save_model_path, global_step_val)
-                with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
+                model_saver.save(sess, save_steps_path, global_step_val)
+                with open(osp.join(osp.dirname(save_steps_path), "best_loss_records.txt"), "a+") as recordf:
                     recordf.write("step-loss: %s - %s\n" % (global_step_val, loss_val))
-            else:
+            if self.arguments["save_best"] or self.extra_save_path:
                 if global_step_val % self.arguments["save_best_check_steps"] != 0 and loss_val < best_loss_val:
                     logger.info("save model.")
-                    model_saver.save(sess, save_model_path, global_step_val)
-                    with open(osp.join(osp.dirname(save_model_path), "best_loss_records.txt"), "a+") as recordf:
+                    model_saver.save(sess, save_best_path, global_step_val)
+                    with open(osp.join(osp.dirname(save_best_path), "best_loss_records.txt"), "a+") as recordf:
                         recordf.write("step-loss: %s - %s\n" % (global_step_val, loss_val))
 
     def make_restore_average_vars_dict(self, variables):
