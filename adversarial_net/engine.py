@@ -3,6 +3,7 @@ from __future__ import absolute_import
 from __future__ import print_function
 import tensorflow as tf
 from tensorflow.python.client import timeline
+from tensorflow.python import debug as tf_debug
 import time
 from adversarial_net import arguments as flags
 from adversarial_net.utils import getLogger
@@ -78,6 +79,7 @@ def configure():
     # continue from break point
     flags.add_argument(name="best_loss_val", argtype=float, default=99999999.0)
     flags.add_argument(name="extra_save_dir", argtype=str, default=None)
+    flags.add_argument(name="tfdebug_root", argtype=str, default=None)
 configure()
 
 class VariableManager(object):
@@ -107,6 +109,7 @@ class BaseModel(object):
         self.model_name = self.__class__.__name__
         self.var_manager = VariableManager()
         self.extra_save_path = self.arguments["extra_save_dir"]
+        self.acc = None
 
     def _get_save_path(self, save_model_path):
         original_save_model_path, filepath = save_model_path.rsplit("/", 1)
@@ -127,7 +130,7 @@ class BaseModel(object):
     def build(self):
         self.built = True
 
-    def _fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None, variables_to_restore = None):
+    def _fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None, variables_to_restore = None, sess = None, debug_mode = False):
         if not self.built:
             raise Exception("call build() before fitting the model")
         model_phase = 1 if self.arguments["phase"] in ["train"] else 0
@@ -137,7 +140,7 @@ class BaseModel(object):
             feed_dict = {}
         feed_dict[tf.keras.backend.learning_phase()] = model_phase
         self.run_training(self.train_op, self.loss, acc=self.acc, feed_dict=feed_dict, save_model_path=save_model_path,
-                          variables_to_restore=variables_to_restore, pretrained_model_path=pretrained_model_path)
+                          variables_to_restore=variables_to_restore, pretrained_model_path=pretrained_model_path, sess=sess, debug_mode=debug_mode)
 
     def trainable_weights(self):
         _trainable_weights = []
@@ -194,12 +197,17 @@ class BaseModel(object):
             train_op = variable_averages.apply(tvars)
         return train_op
 
-    def optimize(self, loss, max_grad_norm, lr, lr_decay, lock_embedding = False):
+    def optimize(self, loss, max_grad_norm, lr, lr_decay, lock_embedding = False, norm_embedding = False):
         with tf.name_scope('optimization'):
             if lock_embedding:
                 embedding_grads_and_vars = []
             else:
                 embedding_grads_and_vars = self._trainable_variables_filter_and_grads(loss, lambda v: "embedding" in v.op.name)
+                if norm_embedding:
+                    embedding_grads = list(map(lambda x: x[0], embedding_grads_and_vars))
+                    embedding_vars = list(map(lambda x: x[1], embedding_grads_and_vars))
+                    embedding_clipped_grads, _ = tf.clip_by_global_norm(embedding_grads, max_grad_norm)
+                    embedding_grads_and_vars = list(zip(embedding_clipped_grads, embedding_vars))
             non_embedding_grads_and_vars = self._get_and_clip_grads_by_variables(loss, self._trainable_variables_filter(
                 lambda v: "embedding" not in v.op.name), max_grad_norm)
             grads_and_vars = embedding_grads_and_vars + non_embedding_grads_and_vars
@@ -372,10 +380,19 @@ class BaseModel(object):
         return var_restore_dict
 
     def run_training(self, train_op, loss, acc=None, feed_dict=None, save_model_path=None, variables_to_restore=None,
-                     pretrained_model_path=None):
+                     pretrained_model_path=None, sess = None, debug_mode = False):
         loss_val = best_loss_val = self.arguments["best_loss_val"]
         global_step_val = 0
-        with tf.Session() as sess:
+        if sess is None:
+            sess = tf.Session()
+        if debug_mode:
+            if save_model_path:
+                dump_root = osp.join(save_model_path, "dump")
+            else:
+                dump_root = self.arguments["tfdebug_root"]
+            sess = tf_debug.LocalCLIDebugWrapperSession(sess, dump_root=dump_root)
+            sess.add_tensor_filter("has_inf_or_nan", tf_debug.has_inf_or_nan)
+        with sess:
             model_saver, summary_writer, merged_summary, coodinator, threads, current_steps = self._initialize_process(sess, save_model_path)
             # pretained model restore step
             self._restore_pretained_variables(sess=sess, pretrained_model_path=pretrained_model_path,

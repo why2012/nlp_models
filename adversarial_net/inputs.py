@@ -20,6 +20,16 @@ def getDatasetFilePath(datapath, dataset, modelname):
             return osp.join(datapath, "imdb_ae_dataset.pickle")
         elif modelname == "word_freqs":
             return osp.join(datapath, "imdb_word_freqs.pickle")
+    elif dataset == "summary":
+        if modelname == "summary_model":
+            return osp.join(datapath, "summary_dataset.pickle")
+        elif modelname == "word_freqs":
+            return osp.join(datapath, "merged_summary_word_freqs.pickle")
+    elif dataset == "truncated_summary":
+        if modelname == "summary_model":
+            return osp.join(datapath, "truncated_summary_dataset.pickle")
+    else:
+        raise Exception("No such dataset %s" % dataset)
 
 class DataLoader(object):
     def __init__(self, base_dir, dataset):
@@ -301,3 +311,53 @@ def construct_input_tensor_with_state(args_fn, datapath, batch_size, unroll_step
                 save_ops.append(batch.save_state(h_name, h_state))
         return tf.group(*save_ops)
     return batch, get_lstm_state, save_lstm_state
+
+def construct_summary_model_bucket_input(datapath, dataset, modelname, batch_size, encoder_decoder_bucket_boundaries):
+    def args_fn(datapack):
+        training_articles = datapack["training_article"]
+        training_titles = datapack["training_title"]
+        X_y_samples = list(zip(training_articles, training_titles))
+        pool = SimpleInMemorySamplePool(X_y_samples, chunk_size=1)
+        def get_single_example():
+            article_titles, doc_indices = pool.__next__()
+            article, title = article_titles[0]
+            # remove sos and eos tag
+            encoder_input = article[1:-1]
+            decoder_input = title[:-1]
+            decoder_target = title[1:]
+            which_bucket = -1
+            for bucket_id, (s_size, t_size) in enumerate(encoder_decoder_bucket_boundaries):
+                if len(article) <= s_size and len(title) <= t_size:
+                    which_bucket = bucket_id
+                    break
+            if which_bucket == -1:
+                which_bucket = len(encoder_decoder_bucket_boundaries)
+            return encoder_input, decoder_input, decoder_target, which_bucket
+
+        tensors = tf.py_func(get_single_example, [],
+                          [tf.int32, tf.int32, tf.int32, tf.int32],
+                          name="get_summary_single_example")
+        return tensors
+    with open(getDatasetFilePath(datapath=datapath, dataset=dataset, modelname=modelname), "rb") as f:
+        datapack = pickle.load(f)
+    encoder_input, decoder_input, decoder_target, which_bucket = args_fn(datapack)
+    encoder_input = tf.reshape(encoder_input, (-1,))
+    decoder_input = tf.reshape(decoder_input, (-1,))
+    decoder_target = tf.reshape(decoder_target, (-1,))
+    encoder_len = tf.shape(encoder_input)[0]
+    decoder_len = tf.shape(decoder_input)[0]
+    encoder_decode_bucket = tf.contrib.training.bucket(which_bucket=which_bucket,
+                                                       tensors=[encoder_len, decoder_len, encoder_input, decoder_input, decoder_target],
+                                                       num_buckets=len(encoder_decoder_bucket_boundaries),
+                                                       num_threads=4, capacity=batch_size * 10, dynamic_pad=True,
+                                                       allow_smaller_final_batch=False, batch_size=batch_size,
+                                                       name="encoder_decoder_bucket")
+    _, (encoder_len_tensor, decoder_len_tensor, encoder_input_tensor, decoder_input_tensor, decoder_target_tensor) = encoder_decode_bucket
+
+    encoder_bucket = {"encoder_len": encoder_len_tensor, "encoder_input": encoder_input_tensor}
+    decoder_bucket = {"decoder_len": decoder_len_tensor,
+                      "decoder_input": decoder_input_tensor,
+                      "decoder_target": decoder_target_tensor}
+
+    return encoder_bucket, decoder_bucket
+

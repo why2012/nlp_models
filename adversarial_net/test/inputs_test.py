@@ -5,6 +5,7 @@ from adversarial_net.inputs import DataLoader, construct_data_queue, construct_l
 from adversarial_net.inputs import construct_classification_model_input_tensor_with_state
 from adversarial_net.inputs import construct_autoencoder_model_input_tensor_with_state
 from adversarial_net.inputs import construct_language_model_input_tensor_with_state
+from adversarial_net.inputs import construct_summary_model_bucket_input
 from adversarial_net.utils import getLogger, ArgumentsBuilder
 import numpy as np
 import argparse
@@ -107,6 +108,26 @@ def test_arguments_builder():
     print("arg3", argBuilder["arg3"])
     print("val3", argBuilder["val3"])
 
+def test_construct_summary_model_input_with_length():
+    encoder_bucket, decoder_bucket = construct_summary_model_bucket_input(
+        datapath="E:/kaggle/avito/imdb_testset/adversarial_net/data/imdb-86934-lowrcase",
+        dataset="summary",
+        modelname="summary_model",
+        batch_size=2,
+        encoder_decoder_bucket_boundaries=[(30, 10), (50, 20), (70, 20), (100, 20), (200, 30)])
+    with tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))) as sess:
+        coodinator = tf.train.Coordinator()
+        threads = tf.train.start_queue_runners(sess, coodinator)
+        print(encoder_bucket)
+        print(decoder_bucket)
+        for i in range(5):
+            encoder_bucket_val, decoder_bucket_val = sess.run([encoder_bucket, decoder_bucket])
+            print("-"*10, i, "-"*10)
+            print(encoder_bucket_val)
+            print(decoder_bucket_val)
+        coodinator.request_stop()
+        coodinator.join(threads)
+
 def test_construct_language_model_input_tensor_with_state():
     batch, _, _ = construct_language_model_input_tensor_with_state(
         "E:/kaggle/avito/imdb_testset/adversarial_net/data", batch_size=1, unroll_steps=100,
@@ -175,5 +196,7 @@ if __name__ == "__main__":
         test_construct_classification_model_input_tensor_with_state()
     elif FLAGS.test_module == "test_construct_autoencoder_model_input_tensor_with_state":
         test_construct_autoencoder_model_input_tensor_with_state()
+    elif FLAGS.test_module == "test_construct_summary_model_input_with_length":
+        test_construct_summary_model_input_with_length()
     else:
         logger.info("unknown testing module: %s" % FLAGS.test_module)

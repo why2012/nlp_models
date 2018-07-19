@@ -437,6 +437,16 @@ class WordCounter(object):
 			self.words_list = pickle.load(f)
 		return self
 
+	def load_and_merge(self, datapath, merge_path):
+		self.load(datapath)
+		with open(merge_path, "rb") as f:
+			merge_words_list = pickle.load(f)
+		merge_words_dict = dict(merge_words_list)
+		for i, (word, freq) in enumerate(self.words_list):
+			if word in merge_words_dict:
+				self.words_list[i] = (word, merge_words_dict[word])
+		return self
+
 	@property
 	def default_counts(self):
 		return copy.deepcopy(self._default_counts)
@@ -453,6 +463,29 @@ class WordCounter(object):
 		# 	content = content.replace(p, " %s " % p)
 		content = re.sub(r"([.,?!:;(){}\[\]])", r" \1 ", content)
 		return content
+
+	def merge(self, wordCount, max_intersect_wordnum = 99999999999):
+		words_list = wordCount.words_list
+		words_list_dict = dict(self.words_list)
+		intersect_count = 0
+		range_intersect_count = 0
+		for i, (word, freq) in enumerate(words_list):
+			if word not in words_list_dict:
+				self.words_list.append((word, freq))
+			else:
+				intersect_count += 1
+				if i < max_intersect_wordnum:
+					range_intersect_count += 1
+		return intersect_count, range_intersect_count
+
+	def intersect_count(self, wordCounter, max_words = None):
+		self_words = list(map(lambda x: x[0], self.words_list))
+		if max_words:
+			self_words = self_words[:max_words]
+		self_words = set(self_words)
+		other_words = list(map(lambda x: x[0], wordCounter.words_list))
+		inter_words = self_words.intersection(other_words)
+		return len(inter_words)
 	
 	def fit(self, filepath_list, target_col = None, clean_text_func = None, doc_count_threshold = None):
 		self.__check_filepath_list(filepath_list)
@@ -538,9 +571,11 @@ class WordCounter(object):
 					for content in chunk[self.target_col]:
 						content = clean_text_func(content)
 						words = [w.lower() if self.lower_case else w for w in self.tok.tokenize(content)]
-						word_indices = [self.bos_index]
+						word_indices = []
 						if start_ch is not None:
 							word_indices.append(start_ch)
+						else:
+							word_indices.append(self.bos_index)
 						for word in words:
 							if word in dictionary:
 								index = dictionary[word]
@@ -556,9 +591,11 @@ class WordCounter(object):
 				for content in data_iter:
 					content = clean_text_func(content)
 					words = [w.lower() if self.lower_case else w for w in self.tok.tokenize(content)]
-					word_indices = [self.bos_index]
+					word_indices = []
 					if start_ch is not None:
 						word_indices.append(start_ch)
+					else:
+						word_indices.append(self.bos_index)
 					for word in words:
 						if word in dictionary:
 							index = dictionary[word]
@@ -585,9 +622,11 @@ class WordCounter(object):
 		for content in docs:
 			content = clean_text_func(content)
 			words = [w.lower() for w in self.tok.tokenize(content)]
-			word_indices = [self.bos_index]
+			word_indices = []
 			if start_ch is not None:
 				word_indices.append(start_ch)
+			else:
+				word_indices.append(self.bos_index)
 			for word in words:
 				if word in dictionary:
 					index = dictionary[word]
@@ -596,7 +635,7 @@ class WordCounter(object):
 					if include_unk:
 						index = 0
 						word_indices.append(index)
-				word_indices.append(self.eos_index)
+			word_indices.append(self.eos_index)
 			documents_indices.append(word_indices)
 				
 		return documents_indices

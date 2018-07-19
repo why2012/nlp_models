@@ -7,6 +7,7 @@ import numpy as np
 from tensorflow import keras
 from adversarial_net.preprocessing import WordCounter
 from adversarial_net import layers
+from adversarial_net.tools import *
 
 class LanguageModelSequence(object):
     def __init__(self, vocab_size, embedding_dim, vocab_freqs, rnn_cell_size, normalize=True, keep_embed_prob=1,
@@ -539,4 +540,187 @@ class ClassificationModelDenseHeader(object):
         for pretrain_name_vars in self.pretrain_weights:
             restorers.append(tf.train.Saver(pretrain_name_vars))
         return restorers
+
+class SummaryGRUs(object):
+    def __init__(self, var_scope_name, state_size, input_dim, gru_keep_prob_out = 1.0, build = True):
+        with tf.variable_scope(var_scope_name) as vs:
+            self.encoder_fw_cell = tf.contrib.rnn.GRUCell(state_size)
+            self.encoder_bw_cell = tf.contrib.rnn.GRUCell(state_size)
+            self.decoder_cell = tf.contrib.rnn.GRUCell(state_size)
+
+            # build
+            if build:
+                input_shape = (1, input_dim)
+                with tf.variable_scope("encoder_fw_cell"):
+                    self.encoder_fw_cell.build(input_shape)
+                    if not self.encoder_fw_cell.trainable_variables:
+                        self.encoder_fw_cell(tf.random_uniform(input_shape), self.encoder_fw_cell.zero_state(1, tf.float32))
+                with tf.variable_scope("encoder_bw_cell"):
+                    self.encoder_bw_cell.build(input_shape)
+                    if not self.encoder_bw_cell.trainable_variables:
+                        self.encoder_bw_cell(tf.random_uniform(input_shape), self.encoder_bw_cell.zero_state(1, tf.float32))
+                with tf.variable_scope("decoder_cell"):
+                    self.decoder_cell.build(input_shape)
+                    if not self.decoder_cell.trainable_variables:
+                        self.decoder_cell(tf.random_uniform(input_shape), self.decoder_cell.zero_state(1, tf.float32))
+
+            self.encoder_fw_cell = tf.contrib.rnn.DropoutWrapper(self.encoder_fw_cell,
+                                                                 output_keep_prob=gru_keep_prob_out)
+            self.encoder_bw_cell = tf.contrib.rnn.DropoutWrapper(self.encoder_bw_cell,
+                                                                 output_keep_prob=gru_keep_prob_out)
+            self.decoder_cell = tf.contrib.rnn.DropoutWrapper(self.decoder_cell, output_keep_prob=gru_keep_prob_out)
+            self._trainable_weights = vs.trainable_variables()
+        self.var_scope_name = var_scope_name
+
+    def __call__(self, embed_inputs):
+        pass
+
+    @property
+    def trainable_weights(self):
+        return self._trainable_weights
+
+    @property
+    def pretrain_weights(self):
+        return [{x.op.name: x for x in self.trainable_weights}]
+
+    @property
+    def pretrain_restorer(self):
+        restorers = []
+        for pretrain_name_vars in self.pretrain_weights:
+            restorers.append(tf.train.Saver(pretrain_name_vars))
+        return restorers
+
+class SummaryBahdanauAttentionLoss(object):
+    def __init__(self, var_scope_name, encoder_fw_cell, encoder_bw_cell, decoder_cell, rnn_size, vocab_size, num_candidate_samples, vocab_freqs):
+        self.encoder_fw_cell = encoder_fw_cell
+        self.encoder_bw_cell = encoder_bw_cell
+        self.decoder_cell = decoder_cell
+        self.rnn_size = rnn_size
+        self.vocab_size = vocab_size
+        with tf.variable_scope(var_scope_name):
+            self.state_proj_layer = keras.layers.Dense(rnn_size, input_dim=rnn_size * 2, activation='relu', name="state-projection-layer")
+        self.var_scope_name = var_scope_name
+        self.num_candidate_samples = num_candidate_samples
+        self.vocab_freqs = vocab_freqs
+        self.reuse = None
+
+    def build(self, input_dim):
+        encoder_embed_inputs = tf.random_uniform((1, 1, input_dim))
+        decoder_embed_inputs = tf.random_uniform((1, 1, input_dim))
+        decoder_targets = tf.ones((1, 1))
+        encoder_len = tf.ones((1,))
+        decoder_len = tf.ones((1,))
+        self(encoder_embed_inputs, decoder_embed_inputs, decoder_targets, encoder_len, decoder_len)
+
+    def __call__(self, encoder_embed_inputs, decoder_embed_inputs, decoder_targets, encoder_len, decoder_len,
+                 initial_state_tuple=(None, None)):
+        with tf.variable_scope(self.var_scope_name, reuse=self.reuse) as vs:
+            batch_size = tf.shape(encoder_embed_inputs)[0]
+            initial_state_fw, initial_state_bw = initial_state_tuple
+            # encoder_outputs (batch_size, time_steps, rnn_size)
+            # encoder_states tuple((batch_size, time_steps), ...)
+            encoder_outputs, encoder_states = tf.nn.bidirectional_dynamic_rnn(self.encoder_fw_cell, self.encoder_bw_cell,
+                                                                              encoder_embed_inputs,
+                                                                              sequence_length=encoder_len,
+                                                                              initial_state_fw=initial_state_fw,
+                                                                              initial_state_bw=initial_state_bw,
+                                                                              dtype=encoder_embed_inputs.dtype)
+            # encoder_states (batch_size, rnn_size * 2)
+            # decoder_init_state (batch_size, rnn_size)
+            decoder_init_state = self.state_proj_layer(tf.concat(encoder_states, axis=1))
+            # decoder_atten_context (batch_size, time_steps, rnn_size * 2)
+            decoder_atten_context = tf.concat(encoder_outputs, axis=2)
+            attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(self.rnn_size, decoder_atten_context, encoder_len)
+            atten_decoder_cell = tf.contrib.seq2seq.AttentionWrapper(self.decoder_cell, attention_mechanism,
+                                                                     attention_layer_size=self.rnn_size * 2)
+            atten_decoder_cell = tf.contrib.rnn.OutputProjectionWrapper(atten_decoder_cell, self.vocab_size)
+
+            decoder_zeros_state = atten_decoder_cell.zero_state(dtype=encoder_embed_inputs.dtype, batch_size=batch_size)
+            decoder_init_state = decoder_zeros_state.clone(cell_state=decoder_init_state)
+
+            helper = tf.contrib.seq2seq.TrainingHelper(decoder_embed_inputs, decoder_len)
+            output_decoder = tf.contrib.seq2seq.BasicDecoder(atten_decoder_cell, helper, decoder_init_state)
+            outputs, final_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(output_decoder)
+            outputs_logits = outputs[0]
+            weights = tf.sequence_mask(decoder_len, dtype=tf.float32)
+
+            outputs_logits = tf.clip_by_value(outputs_logits, 0.3, 0.6)
+
+            loss = tf.contrib.seq2seq.sequence_loss(outputs_logits, decoder_targets, weights,
+                average_across_timesteps=False,
+                average_across_batch=False)
+            # loss = tf.Print(loss, [tf.shape(outputs_logits), count_nan(outputs_logits), count_inf(outputs_logits)], "outputs_logits")
+            # loss = tf.Print(loss, [decoder_targets, count_nan(decoder_targets), count_inf(decoder_targets)], "decoder_targets", summarize=2000)
+            # loss = tf.Print(loss, [tf.shape(weights), count_nan(weights), count_inf(weights)], "weights")
+            # loss = tf.Print(loss, [tf.shape(loss), count_nan(loss), count_inf(loss)], "--loss--")
+            loss = tf.reduce_sum(loss) / tf.cast(batch_size, tf.float32)
+
+            if self.reuse is None:
+                self._trainable_weights = vs.trainable_variables()
+                self.reuse = True
+        return loss, encoder_states
+
+    @property
+    def trainable_weights(self):
+        return self._trainable_weights
+
+    @property
+    def pretrain_weights(self):
+        return [{x.op.name: x for x in self.trainable_weights}]
+
+    @property
+    def pretrain_restorer(self):
+        restorers = []
+        for pretrain_name_vars in self.pretrain_weights:
+            restorers.append(tf.train.Saver(pretrain_name_vars))
+        return restorers
+
+class EvalSummaryBahdanauAttention(object):
+    def __init__(self, associate_var_scope_name, encoder_fw_cell, encoder_bw_cell, decoder_cell, state_proj_layer, to_embedding_layers, rnn_size, vocab_size):
+        self.encoder_fw_cell = encoder_fw_cell
+        self.encoder_bw_cell = encoder_bw_cell
+        self.decoder_cell = decoder_cell
+        self.rnn_size = rnn_size
+        self.vocab_size = vocab_size
+        self.state_proj_layer = state_proj_layer
+        self.to_embedding_layers = to_embedding_layers
+        self.var_scope_name = associate_var_scope_name
+
+    def __call__(self, batch_size, sos_tag, eos_tag, encoder_embed_inputs, encoder_len, beam_width, maximum_iterations=200):
+        with tf.variable_scope(self.var_scope_name):
+            encoder_outputs, encoder_states = tf.nn.bidirectional_dynamic_rnn(self.encoder_fw_cell, self.encoder_bw_cell,
+                                                                              encoder_embed_inputs,
+                                                                              sequence_length=encoder_len,
+                                                                              dtype=encoder_embed_inputs.dtype)
+            decoder_init_state = self.state_proj_layer(tf.concat(encoder_states, axis=1))
+            decoder_atten_context = tf.concat(encoder_outputs, axis=2)
+            decoder_atten_context = tf.contrib.seq2seq.tile_batch(decoder_atten_context, multiplier=beam_width)
+            encoder_len = tf.contrib.seq2seq.tile_batch(encoder_len, multiplier=beam_width)
+            attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(self.rnn_size, decoder_atten_context, encoder_len)
+            atten_decoder_cell = tf.contrib.seq2seq.AttentionWrapper(self.decoder_cell, attention_mechanism,
+                                                                     attention_layer_size=self.rnn_size * 2)
+            atten_decoder_cell = tf.contrib.rnn.OutputProjectionWrapper(atten_decoder_cell, self.vocab_size)
+            st_toks = tf.convert_to_tensor([sos_tag] * batch_size, dtype=tf.int32)
+
+            decoder_initial_state = tf.contrib.seq2seq.tile_batch(decoder_init_state, multiplier=beam_width)
+            decoder_zeros_state = atten_decoder_cell.zero_state(dtype=encoder_embed_inputs.dtype, batch_size=batch_size * beam_width)
+            decoder_initial_state = decoder_zeros_state.clone(cell_state=decoder_initial_state)
+
+            decoder = tf.contrib.seq2seq.BeamSearchDecoder(
+                cell=atten_decoder_cell,
+                embedding=self.to_embedding_layers,
+                start_tokens=st_toks,
+                end_token=eos_tag,
+                initial_state=decoder_initial_state,
+                beam_width=beam_width,
+                output_layer=None,
+                length_penalty_weight=0.0)
+
+            outputs, final_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=maximum_iterations)
+
+            # Beams are ordered from best to worst.
+            # beam_outputs (batch_size, max_iters, beam_width)
+            beam_outputs = outputs.predicted_ids
+
+        return beam_outputs, final_sequence_lengths
 

@@ -1,4 +1,7 @@
 [data processing]
+summary:
+    python adversarial_net\gen_data.py --merged_summary_vocab_freqs_file E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934-lowrcase\merged_summary_word_freqs.pickle --data_dir E:\kaggle\avito\imdb_testset\adversarial_net\data\summary --output_dir E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934-lowrcase --dataset summary --action gene_summary --max_words 86934 --lower_case True
+
 imdb:
     python adversarial_net\gen_data.py --data_dir E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934 --output_dir E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934 --dataset imdb --action gene_lm --max_words 86934
     python adversarial_net\gen_data.py --data_dir E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934 --output_dir E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934 --dataset imdb --action gene_ae --max_words 86934
@@ -26,6 +29,10 @@ python adversarial_net\train_adv_model.py --step eval_cl_model --save_model_dir 
 python adversarial_net\train_adv_model.py --step eval_lm_model --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model\imdb --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934 --inputs_dataset imdb  --inputs_vocab_size 86934
 
 python adversarial_net\train_adv_model.py --step eval_ae_model --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model\imdb --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934 --inputs_dataset imdb  --inputs_vocab_size 86934
+
+python adversarial_net\train_adv_model.py --step train_summary_model --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model\imdb --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934-lowrcase  --inputs_dataset imdb --max_steps 300000 --eval_steps 1000 --inputs_batch_size 80 --inputs_vocab_size 86934 --lm_sequence_rnn_cell_size 512 --lm_sequence_lstm_keep_pro_out 0.5 --lm_sequence_keep_embed_prob 0.5 --lm_sequence_normalize True --lr 1.0
+python adversarial_net\train_adv_model.py --step eval_summary_model --save_model_dir E:\kaggle\avito\imdb_testset\adversarial_net\model\imdb --inputs_datapath E:\kaggle\avito\imdb_testset\adversarial_net\data\imdb-86934-lowrcase --inputs_dataset imdb  --inputs_vocab_size 86934 --lm_sequence_rnn_cell_size 512 --lm_sequence_lstm_keep_pro_out 1.0 --lm_sequence_keep_embed_prob 1.0 --lm_sequence_normalize True
+
 
 from tensorflow.python.tools import inspect_checkpoint as chkp
 chkp.print_tensors_in_checkpoint_file("E:/kaggle/avito/imdb_testset/adversarial_net/model/lm_model/lm_model.ckpt-10", tensor_name='', all_tensors=True)

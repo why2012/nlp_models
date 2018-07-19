@@ -3,20 +3,23 @@ sys.path.insert(0, ".")
 from adversarial_net.models import LanguageModel, AutoEncoderModel
 from adversarial_net.AdversarialDDGModel import AdversarialDDGModel
 from adversarial_net.VirtualAdversarialDDGModel import VirtualAdversarialDDGModel
+from adversarial_net.SummaryModel import SummaryModel
 from adversarial_net import arguments as flags
 from adversarial_net.preprocessing import WordCounter
 from adversarial_net import osp
 from adversarial_net.utils import getLogger
 logger = getLogger("train_model")
 training_step_vals = ["train_lm_model", "pretrain_cl_model", "train_ae_model", "train_generator", "train_topic_generator",
-                      "train_cl_model", "eval_generator", "eval_cl_model", "eval_lm_model", "eval_ae_model"]
+                      "train_cl_model", "eval_generator", "eval_cl_model", "eval_lm_model", "eval_ae_model",
+                      "train_summary_model", "eval_summary_model"]
 model_save_suffixes = {
     "train_lm_model": "lm_model/lm_model.ckpt",
     "pre_train_cl_model": "adv_cl_model/adv_cl_model.ckpt",
     "train_ae_model": "ae_model/ae_model.ckpt",
     "train_generator": "generator/generator.ckpt",
     "train_topic_generator": "topic_generator/topic_generator.ckpt",
-    "train_cl_model": "final_cl_model/final_cl_model.ckpt"
+    "train_cl_model": "final_cl_model/final_cl_model.ckpt",
+    "train_summary_model": "summary_model/summary_model.ckpt"
 }
 class ModelPrefixManager(object):
     NO_PREIFX_TAG = "[no_prefix]"
@@ -70,6 +73,9 @@ flags.add_argument(name="forget_bias", argtype=float, default=0.0)
 flags.add_argument(name="model_prefix", argtype=str, default=None)
 # adversarial training type
 flags.add_argument(name="adv_type", argtype=adv_type, default="adv")
+
+flags.add_argument(name="inputs_docs_path", argtype=str, default="E:/kaggle/avito/imdb_testset/adversarial_net/data/summary/train/train.article.txt")
+flags.add_argument(name="inputs_docs_batch_size", argtype=int, default=2)
 
 # training process         (->embed)
 #                  |--> training lm_model |         (->embed)                 (lock embed)              (lock embed)               (->embed)
@@ -201,10 +207,36 @@ def eval_ae_model(model_save_suffix = model_save_suffixes["train_ae_model"]):
     ae_model = AutoEncoderModel()
     ae_model.eval(save_model_path=save_model_path)
 
+# lm_model -> summary_model -> cl_summary_model
+
+def train_summary_model(model_save_suffix = model_save_suffixes["train_summary_model"]):
+    save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
+    pretrained_model_path = None
+    if flags.pretrain_model_dir:
+        pretrained_model_path = osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"])
+    summary_model = SummaryModel()
+    summary_model.build()
+    summary_model.fit(save_model_path=save_model_path, pretrained_model_path=pretrained_model_path)
+
+def eval_summary_model(model_save_suffix = model_save_suffixes["train_summary_model"]):
+    save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
+    inputs_docs = []
+    with open(flags.inputs_docs_path, "r", encoding="utf-8") as f:
+        for i in range(flags.inputs_docs_batch_size):
+            inputs_docs.append(f.readline())
+    summary_model = SummaryModel()
+    summary_model.eval(inputs_docs=inputs_docs, save_model_path=save_model_path)
+
 if __name__ == "__main__":
-    vocab_freqs = WordCounter().load(
-        osp.join(flags["lm_inputs"]["datapath"], "imdb_word_freqs.pickle")).most_common_freqs(
-        flags["lm_sequence"]["vocab_size"])
+    if flags.step == "train_summary_model" or flags.step == "eval_summary_model":
+        vocab_freqs = WordCounter().load_and_merge(
+            osp.join(flags["lm_inputs"]["datapath"], "%s_word_freqs.pickle" % flags["lm_inputs"]["dataset"]),
+            osp.join(flags["lm_inputs"]["datapath"], "summary_word_freqs.pickle")
+        ).most_common_freqs(flags["lm_sequence"]["vocab_size"])
+    else:
+        vocab_freqs = WordCounter().load(
+            osp.join(flags["lm_inputs"]["datapath"], "%s_word_freqs.pickle" % flags["lm_inputs"]["dataset"])).most_common_freqs(
+            flags["lm_sequence"]["vocab_size"])
     flags.add_variable(name="vocab_freqs", value=vocab_freqs)
     if flags.step == "train_lm_model":
         train_lm_model()
@@ -227,3 +259,7 @@ if __name__ == "__main__":
         eval_lm_model()
     elif flags.step == "eval_ae_model":
         eval_ae_model()
+    elif flags.step == "train_summary_model":
+        train_summary_model()
+    elif flags.step == "eval_summary_model":
+        eval_summary_model()

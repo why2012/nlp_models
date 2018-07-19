@@ -24,11 +24,89 @@ parser.add_argument("--doc_count_threshold", type=int, default=1)
 parser.add_argument("--lower_case", type=bool, default=False)
 parser.add_argument("--include_unk", type=bool, default=False)
 parser.add_argument("--vocab_freqs_file", type=str, default=None)
+parser.add_argument("--summary_vocab_freqs_file", type=str, default=None)
+parser.add_argument("--merged_summary_vocab_freqs_file", type=str, default=None)
 parser.add_argument("--validation_rate", type=float, default=0)
 parser.add_argument("--shuffle_onval", type=bool, default=True)
 parser.add_argument("--no_need_start_tag", type=bool, default=True)
 FLAGS = parser.parse_args()
 logger = getLogger("DataGenerator")
+
+def _load_words(filename, wordCount, max_words):
+    training_words = wordCount.transform([osp.join(FLAGS.data_dir, filename)],
+                                         max_words=max_words,
+                                         include_unk=FLAGS.include_unk)
+    n_samples_training_words = len(training_words)
+    min_seqlen_training_words = min(map(len, training_words))
+    max_seqlen_training_words = max(map(len, training_words))
+    logger.info(
+        "total number of words: %s; min_seqlen in words: %s; max_seqlen in words: %s" % (
+            n_samples_training_words, min_seqlen_training_words, max_seqlen_training_words))
+    return training_words
+
+def generate_summary():
+    wordCount = WordCounter(lower_case=FLAGS.lower_case)
+    rand = np.random.RandomState(seed=8888)
+    if FLAGS.merged_summary_vocab_freqs_file is None:
+        if FLAGS.summary_vocab_freqs_file is None:
+            logger.info("generating summary vocabulary...")
+            wordCount.fit(glob.glob(osp.join(FLAGS.data_dir, "train/*.txt")),
+                          doc_count_threshold=FLAGS.doc_count_threshold)
+            logger.info("saving summary vocabulary...")
+            with open(osp.join(FLAGS.output_dir, "summary_word_freqs.pickle"), "wb") as f:
+                pickle.dump(wordCount.words_list, f)
+        else:
+            logger.info("loading summary vocabulary...")
+            with open(FLAGS.summary_vocab_freqs_file, "rb") as f:
+                wordCount.words_list = pickle.load(f)
+        logger.info(
+            "summary vocabulary counts: %s; most frequent words: %s" % (len(wordCount.words_list), str(wordCount.words_list[: 5])))
+        logger.info("loading classi vocabulary...")
+        with open(FLAGS.vocab_freqs_file, "rb") as f:
+            classi_vocabs = pickle.load(f)
+            classiWordCount = WordCounter(lower_case=FLAGS.lower_case)
+            classiWordCount.words_list = classi_vocabs
+        logger.info(
+            "classi vocabulary counts: %s; most frequent words: %s" % (len(classiWordCount.words_list), str(classiWordCount.words_list[: 5])))
+        logger.info("merging summary vocabs and classi vocabs..")
+        intersect_count, range_intersect_count = classiWordCount.merge(wordCount, max_intersect_wordnum=FLAGS.max_words)
+        print("intersect_count: %s, range_intersect_count: %s" % (intersect_count, range_intersect_count))
+        wordCount = classiWordCount
+    else:
+        with open(FLAGS.merged_summary_vocab_freqs_file, "rb") as f:
+            wordCount.words_list = pickle.load(f)
+    logger.info(
+        "merged summary vocabulary counts: %s; most frequent words: %s" % (len(wordCount.words_list), str(wordCount.words_list[: 5])))
+    if FLAGS.merged_summary_vocab_freqs_file is None:
+        logger.info("saving merged summary vocabulary...")
+        with open(osp.join(FLAGS.output_dir, "merged_summary_word_freqs.pickle"), "wb") as f:
+            pickle.dump(wordCount.words_list, f)
+        with open(osp.join(FLAGS.output_dir, "total_%s_words" % len(wordCount.words_list)), "w"):
+            pass
+    # transform words
+    logger.info("transforming words...")
+    logger.info("transforming training article words...")
+    training_article = _load_words("train/train.article.txt", wordCount, FLAGS.max_words)
+    logger.info("transforming training title words...")
+    training_title = _load_words("train/train.title.txt", wordCount, FLAGS.max_words)
+    logger.info("transforming valid article words...")
+    valid_article = _load_words("train/valid.article.filter.txt", wordCount, FLAGS.max_words)
+    logger.info("transforming valid title words...")
+    valid_title = _load_words("train/valid.title.filter.txt", wordCount, FLAGS.max_words)
+
+    training_article = training_article + valid_article
+    training_title = training_title + valid_title
+    # sample
+    article_pos_sample_index = rand.choice(len(training_article), 1)[0]
+    title_pos_sample_index = rand.choice(len(training_title), 1)[0]
+    logger.info("training_article sample: %s" % training_article[article_pos_sample_index])
+    logger.info("training_title sample: %s" % training_title[title_pos_sample_index])
+    # save
+    logger.info("saving...")
+    pickle_data = {"training_article": training_article, "training_title": training_title}
+    with open(osp.join(FLAGS.output_dir, "summary_dataset.pickle"), "wb") as f:
+        pickle.dump(pickle_data, f)
+
 
 def generate_imdb():
     wordCount = WordCounter(lower_case=FLAGS.lower_case)
@@ -235,5 +313,7 @@ if __name__ == "__main__":
         generate_autoencoder_training_data()
     elif FLAGS.action == "gene_classi":
         generate_classification_data()
+    elif FLAGS.action == "gene_summary":
+        generate_summary()
     else:
-        raise Exception("Unknown dataset: " + FLAGS.dataset)
+        raise Exception("Unknown action: " + FLAGS.action)
