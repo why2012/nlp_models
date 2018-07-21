@@ -275,7 +275,6 @@ class AdversarialDDGModel(BaseModel):
         classification_accuracy, update_op = tf.metrics.accuracy(y_tensor, tf.argmax(genuing_cl_logits, 1), tf.gather_nd(weight_tensor, laststep_gather_indices))
         # save_lstm_state
         with tf.control_dependencies([save_lstm_state(genuing_final_states)]):
-            classification_accuracy = tf.identity(classification_accuracy)
             update_op = tf.identity(update_op)
         return classification_accuracy, update_op
 
@@ -420,11 +419,7 @@ class AdversarialDDGModel(BaseModel):
             return_cache.append(fake_cl_acc)
         return return_cache
 
-    # stepA: fake_genuing_discriminator & generator
-    # stepB: pretrain topic_discriminator with genuing data
-    # stepC: use topic_discriminator to train topic_generator
-    # stepD: use topic_generator and genuing data to re-train topic_discriminator
-    def build(self, stepA = False, stepB = False, stepC = False, stepD = False, eval_seq = False, eval_cl = False, **kwargs):
+    def pre_build(self):
         variables = {}
         savers = {}
         losses = {}
@@ -435,6 +430,33 @@ class AdversarialDDGModel(BaseModel):
         self._fit_kwargs["losses"] = losses
         self._fit_kwargs["accs"] = accs
         self._fit_kwargs["eval_graph"] = eval_graph
+        return variables, savers, losses, accs, eval_graph
+
+    def post_build(self, pretrained_sequences, savers, kwargs):
+        if "restorer_tag_notifier" in kwargs:
+            restorer_tag_notifier = kwargs["restorer_tag_notifier"]
+        else:
+            restorer_tag_notifier = []
+        for tag, seq in pretrained_sequences.items():
+            if tag in restorer_tag_notifier:
+                seq.remove_scope_name_when_restore = False
+            pretrain_restorer = seq.pretrain_restorer
+            if pretrain_restorer:
+                if isinstance(pretrain_restorer, list):
+                    if len(pretrain_restorer) == 1:
+                        savers[tag] = pretrain_restorer[0]
+                    else:
+                        for i, restorer in enumerate(pretrain_restorer):
+                            savers[tag + "_%s" % (i + 1,)] = restorer
+                else:
+                    savers[tag] = pretrain_restorer
+
+    # stepA: fake_genuing_discriminator & generator
+    # stepB: pretrain topic_discriminator with genuing data
+    # stepC: use topic_discriminator to train topic_generator
+    # stepD: use topic_generator and genuing data to re-train topic_discriminator
+    def build(self, stepA = False, stepB = False, stepC = False, stepD = False, eval_seq = False, eval_cl = False, **kwargs):
+        variables, savers, losses, accs, eval_graph = self.pre_build()
         if stepA:
             self.stepTag = "stepA"
             discriminator_loss, generator_loss, genuing_fake_accs = self.build_fake_genuing_discriminator()
@@ -525,23 +547,7 @@ class AdversarialDDGModel(BaseModel):
         else:
             raise Exception("Unsupport ops")
 
-        if "restorer_tag_notifier" in kwargs:
-            restorer_tag_notifier = kwargs["restorer_tag_notifier"]
-        else:
-            restorer_tag_notifier = []
-        for tag, seq in pretrained_sequences.items():
-            if tag in restorer_tag_notifier:
-                seq.remove_scope_name_when_restore = False
-            pretrain_restorer = seq.pretrain_restorer
-            if pretrain_restorer:
-                if isinstance(pretrain_restorer, list):
-                    if len(pretrain_restorer) == 1:
-                        savers[tag] = pretrain_restorer[0]
-                    else:
-                        for i, restorer in enumerate(pretrain_restorer):
-                            savers[tag + "_%s" % (i + 1,)] = restorer
-                else:
-                    savers[tag] = pretrain_restorer
+        self.post_build(pretrained_sequences, savers, kwargs)
 
         self.optimize(max_grad_norm=self.arguments["max_grad_norm"], lr=self.arguments["lr"], lr_decay=self.arguments["lr_decay"])
 
@@ -549,7 +555,10 @@ class AdversarialDDGModel(BaseModel):
     # stepB: pretrain topic_discriminator with genuing data
     # stepC: use topic_discriminator to train topic_generator
     # stepD: use topic_generator and genuing data to re-train topic_discriminator
-    def optimize(self, max_grad_norm, lr, lr_decay):
+    def optimize(self, max_grad_norm = None, lr = None, lr_decay = None):
+        max_grad_norm = self.arguments["max_grad_norm"] if max_grad_norm is None else max_grad_norm
+        lr = self.arguments["lr"] if lr is None else lr
+        lr_decay = self.arguments["lr_decay"] if lr_decay is None else lr_decay
         def _optimize(loss, variables, train_op_name, exclude_op_names = []):
             grads_and_vars = self._get_and_clip_grads_by_variables(loss, variables, max_grad_norm, exclude_op_names=exclude_op_names)
             global_step = tf.Variable(0, trainable=False, name="%s_global_step" % train_op_name)

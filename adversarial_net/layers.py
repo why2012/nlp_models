@@ -47,13 +47,15 @@ class Embedding(keras.layers.Layer):
         embedded = tf.nn.embedding_lookup(self.var, x)
         if self.keep_prob < 1.:
           shape = embedded.get_shape().as_list()
+          if None in shape:
+              shape = tf.shape(embedded)
+          noise_shape = (shape[0], 1, shape[2])
 
           # Use same dropout masks at each timestep with specifying noise_shape.
           # This slightly improves performance.
           # Please see https://arxiv.org/abs/1512.05287 for the theoretical
           # explanation.
-          embedded = tf.nn.dropout(
-              embedded, self.keep_prob, noise_shape=(shape[0], 1, shape[2]))
+          embedded = tf.nn.dropout(embedded, self.keep_prob, noise_shape=noise_shape)
         return embedded
 
     def _normalize(self, emb):

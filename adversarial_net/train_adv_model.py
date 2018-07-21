@@ -3,6 +3,7 @@ sys.path.insert(0, ".")
 from adversarial_net.models import LanguageModel, AutoEncoderModel
 from adversarial_net.AdversarialDDGModel import AdversarialDDGModel
 from adversarial_net.VirtualAdversarialDDGModel import VirtualAdversarialDDGModel
+from adversarial_net.AdversarialSummaryModel import AdversarialSummaryModel
 from adversarial_net.SummaryModel import SummaryModel
 from adversarial_net import arguments as flags
 from adversarial_net.preprocessing import WordCounter
@@ -11,7 +12,7 @@ from adversarial_net.utils import getLogger
 logger = getLogger("train_model")
 training_step_vals = ["train_lm_model", "pretrain_cl_model", "train_ae_model", "train_generator", "train_topic_generator",
                       "train_cl_model", "eval_generator", "eval_cl_model", "eval_lm_model", "eval_ae_model",
-                      "train_summary_model", "eval_summary_model"]
+                      "train_summary_model", "eval_summary_model", "train_summary_cl_model", "eval_summary_cl_model"]
 model_save_suffixes = {
     "train_lm_model": "lm_model/lm_model.ckpt",
     "pre_train_cl_model": "adv_cl_model/adv_cl_model.ckpt",
@@ -19,7 +20,8 @@ model_save_suffixes = {
     "train_generator": "generator/generator.ckpt",
     "train_topic_generator": "topic_generator/topic_generator.ckpt",
     "train_cl_model": "final_cl_model/final_cl_model.ckpt",
-    "train_summary_model": "summary_model/summary_model.ckpt"
+    "train_summary_model": "summary_model/summary_model.ckpt",
+    "train_summary_cl_model": "summary_cl_model/summary_cl_model.ckpt",
 }
 class ModelPrefixManager(object):
     NO_PREIFX_TAG = "[no_prefix]"
@@ -227,6 +229,30 @@ def eval_summary_model(model_save_suffix = model_save_suffixes["train_summary_mo
     summary_model = SummaryModel()
     summary_model.eval(inputs_docs=inputs_docs, save_model_path=save_model_path)
 
+def train_summary_cl_model(model_save_suffix = model_save_suffixes["train_summary_cl_model"]):
+    assert flags.pretrain_model_dir, "pretrain_model_dir is required"
+    save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
+    pretrained_model_pathes = {
+        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
+        "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
+        "SUMMARY": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]train_summary_model"]),
+    }
+    if flags["adv_type"] == "adv":
+        adv_cl_model = AdversarialSummaryModel()
+    elif flags["adv_type"] == "vir_adv":
+        raise Exception("Unimplement")
+    else:
+        raise Exception("Unknow adv_type: %s" % flags["adv_type"])
+    adv_cl_model.build(training=True, restorer_tag_notifier=["SUMMARY"])
+    adv_cl_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
+
+def eval_summary_cl_model():
+    model_save_suffix = model_save_suffixes["train_summary_cl_model"]
+    save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
+    generator_model = AdversarialSummaryModel()
+    generator_model.build(eval_cl=True)
+    generator_model.eval(save_model_path=save_model_path)
+
 if __name__ == "__main__":
     if flags.step == "train_summary_model" or flags.step == "eval_summary_model":
         vocab_freqs = WordCounter().load_and_merge(
@@ -263,3 +289,7 @@ if __name__ == "__main__":
         train_summary_model()
     elif flags.step == "eval_summary_model":
         eval_summary_model()
+    elif flags.step == "train_summary_cl_model":
+        train_summary_cl_model()
+    elif flags.step == "eval_summary_cl_model":
+        eval_summary_cl_model()

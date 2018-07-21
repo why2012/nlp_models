@@ -165,11 +165,14 @@ class AdversarialLoss(object):
     def __init__(self, perturb_norm_length):
         self.perturb_norm_length = perturb_norm_length
 
-    def __call__(self, loss, compute_loss_fn, target):
+    def __call__(self, loss, compute_loss_fn, target, only_perturb = False):
         target_grads = tf.gradients(loss, target)[0]
         target_grads = tf.stop_gradient(target_grads)
         perturb = self.embed_scale_l2(target_grads, self.perturb_norm_length)
-        return compute_loss_fn(target + perturb)
+        if only_perturb:
+            return perturb
+        else:
+            return compute_loss_fn(target + perturb)
 
     def embed_scale_l2(self, x, norm_length):
         # alpha (None, 1, 1)
@@ -632,7 +635,8 @@ class SummaryBahdanauAttentionLoss(object):
             decoder_atten_context = tf.concat(encoder_outputs, axis=2)
             attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(self.rnn_size, decoder_atten_context, encoder_len)
             atten_decoder_cell = tf.contrib.seq2seq.AttentionWrapper(self.decoder_cell, attention_mechanism,
-                                                                     attention_layer_size=self.rnn_size * 2)
+                                                                     attention_layer_size=self.rnn_size * 2,
+                                                                     output_attention=True)
             atten_decoder_cell = tf.contrib.rnn.OutputProjectionWrapper(atten_decoder_cell, self.vocab_size)
 
             decoder_zeros_state = atten_decoder_cell.zero_state(dtype=encoder_embed_inputs.dtype, batch_size=batch_size)
@@ -685,9 +689,10 @@ class EvalSummaryBahdanauAttention(object):
         self.state_proj_layer = state_proj_layer
         self.to_embedding_layers = to_embedding_layers
         self.var_scope_name = associate_var_scope_name
+        self.reuse = None
 
     def __call__(self, batch_size, sos_tag, eos_tag, encoder_embed_inputs, encoder_len, beam_width, maximum_iterations=200):
-        with tf.variable_scope(self.var_scope_name):
+        with tf.variable_scope(self.var_scope_name) as vs:
             encoder_outputs, encoder_states = tf.nn.bidirectional_dynamic_rnn(self.encoder_fw_cell, self.encoder_bw_cell,
                                                                               encoder_embed_inputs,
                                                                               sequence_length=encoder_len,
@@ -698,9 +703,10 @@ class EvalSummaryBahdanauAttention(object):
             encoder_len = tf.contrib.seq2seq.tile_batch(encoder_len, multiplier=beam_width)
             attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(self.rnn_size, decoder_atten_context, encoder_len)
             atten_decoder_cell = tf.contrib.seq2seq.AttentionWrapper(self.decoder_cell, attention_mechanism,
-                                                                     attention_layer_size=self.rnn_size * 2)
+                                                                     attention_layer_size=self.rnn_size * 2,
+                                                                     output_attention=True)
             atten_decoder_cell = tf.contrib.rnn.OutputProjectionWrapper(atten_decoder_cell, self.vocab_size)
-            st_toks = tf.convert_to_tensor([sos_tag] * batch_size, dtype=tf.int32)
+            st_toks = tf.fill((batch_size,), sos_tag)
 
             decoder_initial_state = tf.contrib.seq2seq.tile_batch(decoder_init_state, multiplier=beam_width)
             decoder_zeros_state = atten_decoder_cell.zero_state(dtype=encoder_embed_inputs.dtype, batch_size=batch_size * beam_width)
@@ -716,11 +722,30 @@ class EvalSummaryBahdanauAttention(object):
                 output_layer=None,
                 length_penalty_weight=0.0)
 
+            # final_sequence_lengths (batch_size, beam_width)
             outputs, final_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=maximum_iterations)
 
             # Beams are ordered from best to worst.
             # beam_outputs (batch_size, max_iters, beam_width)
             beam_outputs = outputs.predicted_ids
+            if self.reuse is None:
+                self._trainable_weights = vs.trainable_variables()
+                self.reuse = True
 
         return beam_outputs, final_sequence_lengths
+
+    @property
+    def trainable_weights(self):
+        return self._trainable_weights
+
+    @property
+    def pretrain_weights(self):
+        return [{x.op.name: x for x in self.trainable_weights}]
+
+    @property
+    def pretrain_restorer(self):
+        restorers = []
+        for pretrain_name_vars in self.pretrain_weights:
+            restorers.append(tf.train.Saver(pretrain_name_vars))
+        return restorers
 

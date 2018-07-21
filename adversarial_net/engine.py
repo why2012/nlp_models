@@ -62,6 +62,11 @@ def configure():
     flags.add_argument(scope="gan", name="critic_iters", argtype=int, default=5)
     flags.add_argument(scope="gan", name="rnn_cell_size", argtype=int, default=1024)
 
+    flags.add_argument(scope="summary", name="rnn_cell_size", argtype=int, default=512)
+    flags.add_argument(scope="summary", name="rnn_keep_prob_out", argtype=float, default=1.0)
+    flags.add_argument(scope="summary", name="maximum_iterations", argtype=int, default=50)
+    flags.add_argument(scope="summary", name="beam_width", argtype=int, default=3)
+
     flags.add_argument(name="phase", argtype=str, default="train")
     flags.add_argument(name="max_grad_norm", argtype=float, default=1.0)
     flags.add_argument(name="lr", argtype=float, default=1e-3)

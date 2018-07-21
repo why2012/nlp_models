@@ -28,16 +28,16 @@ class SummaryModel(BaseModel):
             normalize=self.arguments["lm_sequence"]["normalize"],
             keep_embed_prob=self.arguments["lm_sequence"]["keep_embed_prob"])
         self.grus = seq.SummaryGRUs(var_scope_name="GRUs",
-                                    state_size=self.arguments["lm_sequence"]["rnn_cell_size"],
+                                    state_size=self.arguments["summary"]["rnn_cell_size"],
                                     input_dim=self.arguments["lm_sequence"]["embedding_dim"],
-                                    gru_keep_prob_out=self.arguments["lm_sequence"]["lstm_keep_pro_out"],
+                                    gru_keep_prob_out=self.arguments["summary"]["rnn_keep_prob_out"],
                                     build=False)
         self.atten_loss = seq.SummaryBahdanauAttentionLoss(
             var_scope_name="BahdanauAttentionLoss",
             encoder_fw_cell=self.grus.encoder_fw_cell,
             encoder_bw_cell=self.grus.encoder_bw_cell,
             decoder_cell=self.grus.decoder_cell,
-            rnn_size=self.arguments["lm_sequence"]["rnn_cell_size"],
+            rnn_size=self.arguments["summary"]["rnn_cell_size"],
             vocab_size=self.arguments["lm_sequence"]["vocab_size"],
             num_candidate_samples=self.arguments["lm_loss"]["num_candidate_samples"],
             vocab_freqs=self.arguments["vocab_freqs"])
@@ -49,7 +49,7 @@ class SummaryModel(BaseModel):
             decoder_cell=self.grus.decoder_cell,
             state_proj_layer=self.atten_loss.state_proj_layer,
             to_embedding_layers=self.to_embedding,
-            rnn_size=self.arguments["lm_sequence"]["rnn_cell_size"],
+            rnn_size=self.arguments["summary"]["rnn_cell_size"],
             vocab_size=self.arguments["lm_sequence"]["vocab_size"])
 
     def build(self):
@@ -79,7 +79,7 @@ class SummaryModel(BaseModel):
                                       norm_embedding = True)
         super(SummaryModel, self).build()
 
-    def eval(self, inputs_docs, save_model_path, lower_case=True, maximum_iterations = 100):
+    def eval(self, inputs_docs, save_model_path, lower_case=True):
         batch_size = len(inputs_docs)
         wordCounter = DataLoader.reload_word_counter(
             vocab_abspath=getDatasetFilePath(self.arguments["inputs"]["datapath"], "summary", "word_freqs"))
@@ -96,7 +96,8 @@ class SummaryModel(BaseModel):
         outputs, final_sequence_lengths = self.eval_layer(batch_size=batch_size, sos_tag=SOS_TAG, eos_tag=EOS_TAG,
                                                           encoder_len=seq_len_placeholder,
                                                           encoder_embed_inputs=self.to_embedding(to_embedding_layers_placeholder),
-                                                          beam_width=10, maximum_iterations=maximum_iterations)
+                                                          beam_width=self.arguments["summary"]["beam_width"],
+                                                          maximum_iterations=self.arguments["summary"]["maximum_iterations"])
         with tf.Session(config=tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))) as sess:
             self._resotre_training_model(sess=sess, save_model_path=save_model_path)
             output_idx, final_sequence_lengths_val = sess.run([outputs, final_sequence_lengths], feed_dict={
