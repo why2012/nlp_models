@@ -87,6 +87,8 @@ def configure():
     flags.add_argument(name="best_loss_val", argtype=float, default=99999999.0)
     flags.add_argument(name="extra_save_dir", argtype=str, default=None)
     flags.add_argument(name="tfdebug_root", argtype=str, default=None)
+    flags.add_argument(name="use_exp_mov_avg_loss", argtype=bool, default=False)
+    flags.add_argument(name="use_exp_mov_avg_loss_decay", argtype=float, default=0.9)
 configure()
 
 class VariableManager(object):
@@ -117,6 +119,7 @@ class BaseModel(object):
         self.var_manager = VariableManager()
         self.extra_save_path = self.arguments["extra_save_dir"]
         self.acc = None
+        self.exp_mov_avg_loss = None
 
     def _get_save_path(self, save_model_path):
         original_save_model_path, filepath = save_model_path.rsplit("/", 1)
@@ -205,6 +208,19 @@ class BaseModel(object):
             train_op = variable_averages.apply(tvars)
         return train_op
 
+    def exponential_moving_average_loss(self, train_op, loss, global_step, decay = -1):
+        if self.arguments["use_exp_mov_avg_loss"]:
+            if decay == -1:
+                decay = self.arguments["use_exp_mov_avg_loss_decay"]
+            variable_averages = tf.train.ExponentialMovingAverage(decay, global_step)
+            with tf.control_dependencies([train_op]):
+                train_op = variable_averages.apply([loss])
+            exp_mov_avg_loss = variable_averages.average(loss)
+            tf.summary.scalar('exp_mov_avg_loss', exp_mov_avg_loss)
+            return train_op, exp_mov_avg_loss
+        else:
+            return train_op, loss
+
     def optimize(self, loss, max_grad_norm, lr, lr_decay, lock_embedding=False, norm_embedding=False,
                  optimizer=tf.train.AdamOptimizer, optimizer_kwargs={}):
         with tf.name_scope('optimization'):
@@ -223,6 +239,8 @@ class BaseModel(object):
             # Decaying learning rate
             train_op, lr = self._get_train_op_with_lr_decay(grads_and_vars, self.global_step, lr=lr, lr_decay=lr_decay,
                                                             optimizer=optimizer, optimizer_kwargs=optimizer_kwargs)
+            train_op, exp_mov_avg_loss = self.exponential_moving_average_loss(train_op, loss, self.global_step)
+            self.exp_mov_avg_loss = exp_mov_avg_loss
             tf.summary.scalar('learning_rate', lr)
             tf.summary.scalar('loss', loss)
             if self.use_average:
@@ -286,15 +304,12 @@ class BaseModel(object):
         # training phase
         if acc is not None and self.arguments["eval_acc"]:
             ops.append(acc)
-            _, loss_val, global_step_val, summary, acc_val = sess.run(ops, feed_dict=feed_dict,
-                                                                      options=run_options,
-                                                                      run_metadata=run_metadata)
+            return_cache = sess.run(ops, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
         else:
             acc_val = 0.
-            _, loss_val, global_step_val, summary = sess.run(ops, feed_dict=feed_dict,
-                                                             options=run_options,
-                                                             run_metadata=run_metadata)
-        return loss_val, global_step_val, summary, acc_val
+            return_cache = sess.run(ops, feed_dict=feed_dict, options=run_options, run_metadata=run_metadata)
+            return_cache.append(acc_val)
+        return return_cache[1:]
 
     def _summary_step(self, sess, debug_tensors, global_step_val, summary_writer, summary, run_metadata = None, feed_dict = None):
         if debug_tensors:
@@ -427,10 +442,17 @@ class BaseModel(object):
                 run_options, run_metadata = self._pretrain_step(global_step_val)
                 start_time = time.time()
                 # train step
-                ops = [train_op, loss, self.global_step, merged_summary]
-                loss_val, global_step_val, summary, acc_val = self._train_step(sess=sess, ops=ops, acc=acc,
-                                                                               feed_dict=feed_dict, run_options=run_options,
-                                                                               run_metadata=run_metadata)
+                if self.arguments["use_exp_mov_avg_loss"]:
+                    ops = [train_op, loss, self.global_step, merged_summary, self.exp_mov_avg_loss]
+                else:
+                    ops = [train_op, loss, self.global_step, merged_summary]
+                return_cache = self._train_step(sess=sess, ops=ops, acc=acc, feed_dict=feed_dict, run_options=run_options,
+                                                run_metadata=run_metadata)
+                if self.arguments["use_exp_mov_avg_loss"]:
+                    loss_val, global_step_val, summary, exp_mov_avg_loss_val, acc_val = return_cache
+                    loss_val = exp_mov_avg_loss_val
+                else:
+                    loss_val, global_step_val, summary, acc_val = return_cache
                 duration = time.time() - start_time
                 # summary & debug trace phase
                 self._summary_step(sess=sess, debug_tensors=self.debug_tensors, global_step_val=global_step_val,
