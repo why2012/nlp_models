@@ -81,6 +81,8 @@ def configure():
     flags.add_argument(name="tf_debug_trace", argtype=bool, default=False)
     flags.add_argument(name="tf_timeline_dir", argtype=str, default=None)
     flags.add_argument(name="no_need_clip_grads", argtype=bool, default=False)
+    flags.add_argument(name="with_lr_decay", argtype="bool", default=True)
+    flags.add_argument(name="lr_decay_step", argtype=int, default=1)
     # continue from break point
     flags.add_argument(name="best_loss_val", argtype=float, default=99999999.0)
     flags.add_argument(name="extra_save_dir", argtype=str, default=None)
@@ -188,11 +190,12 @@ class BaseModel(object):
         return list(zip(grads, tvars))
 
     def _get_train_op_with_lr_decay(self, grads_and_vars, global_step, lr=None, lr_decay=None, staircase=True,
-                                    decay_step=1, optimizer=tf.train.AdamOptimizer):
+                                    optimizer=tf.train.AdamOptimizer, optimizer_kwargs = {}):
         lr = self.arguments["lr"] if lr is None else lr
         lr_decay = self.arguments["lr_decay"] if lr_decay is None else lr_decay
-        lr = tf.train.exponential_decay(lr, global_step, decay_step, lr_decay, staircase=staircase)
-        opt = optimizer(lr)
+        if self.arguments["with_lr_decay"]:
+            lr = tf.train.exponential_decay(lr, global_step, self.arguments["lr_decay_step"], lr_decay, staircase=staircase)
+        opt = optimizer(lr, **optimizer_kwargs)
         apply_gradient_op = opt.apply_gradients(grads_and_vars, global_step=global_step)
         return apply_gradient_op, lr
 
@@ -202,7 +205,8 @@ class BaseModel(object):
             train_op = variable_averages.apply(tvars)
         return train_op
 
-    def optimize(self, loss, max_grad_norm, lr, lr_decay, lock_embedding = False, norm_embedding = False):
+    def optimize(self, loss, max_grad_norm, lr, lr_decay, lock_embedding=False, norm_embedding=False,
+                 optimizer=tf.train.AdamOptimizer, optimizer_kwargs={}):
         with tf.name_scope('optimization'):
             if lock_embedding:
                 embedding_grads_and_vars = []
@@ -217,7 +221,8 @@ class BaseModel(object):
                 lambda v: "embedding" not in v.op.name), max_grad_norm)
             grads_and_vars = embedding_grads_and_vars + non_embedding_grads_and_vars
             # Decaying learning rate
-            train_op, lr = self._get_train_op_with_lr_decay(grads_and_vars, self.global_step, lr=lr, lr_decay=lr_decay)
+            train_op, lr = self._get_train_op_with_lr_decay(grads_and_vars, self.global_step, lr=lr, lr_decay=lr_decay,
+                                                            optimizer=optimizer, optimizer_kwargs=optimizer_kwargs)
             tf.summary.scalar('learning_rate', lr)
             tf.summary.scalar('loss', loss)
             if self.use_average:
@@ -254,10 +259,21 @@ class BaseModel(object):
             model_ckpt = tf.train.get_checkpoint_state(osp.dirname(save_model_path))
             model_checkpoint_exists = model_ckpt and model_ckpt.model_checkpoint_path
             if model_checkpoint_exists:
+                self.check_best_loss_val()
                 logger.info("resotre model from %s" % model_ckpt.model_checkpoint_path)
                 if saver_for_model_restore is None:
                     saver_for_model_restore = tf.train.Saver()
                 saver_for_model_restore.restore(sess, model_ckpt.model_checkpoint_path)
+
+    def check_best_loss_val(self):
+        if self.arguments["best_loss_val"] == 99999999.0:
+            continue_or_num = input("trained model exists, but no specific best_loss_val is defined, continue (Y/N/best_loss_val)[input Y when test]: ").strip().upper()
+            if continue_or_num == "Y":
+                return
+            elif continue_or_num.isdigit():
+                self.arguments.set_real_argument_value(name="best_loss_val", value=float(continue_or_num))
+            else:
+                exit(0)
 
     def _pretrain_step(self, global_step_val):
         run_options = run_metadata = None

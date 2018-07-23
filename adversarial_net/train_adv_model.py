@@ -77,7 +77,7 @@ flags.add_argument(name="model_prefix", argtype=str, default=None)
 flags.add_argument(name="adv_type", argtype=adv_type, default="adv")
 
 flags.add_argument(name="inputs_docs_path", argtype=str, default="E:/kaggle/avito/imdb_testset/adversarial_net/data/summary/train/train.article.txt")
-flags.add_argument(name="inputs_docs_batch_size", argtype=int, default=2)
+flags.add_argument(name="inputs_docs_batch_size", argtype=int, default=5)
 
 # training process         (->embed)
 #                  |--> training lm_model |         (->embed)                 (lock embed)              (lock embed)               (->embed)
@@ -222,10 +222,14 @@ def train_summary_model(model_save_suffix = model_save_suffixes["train_summary_m
 
 def eval_summary_model(model_save_suffix = model_save_suffixes["train_summary_model"]):
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
+    read_docs = []
     inputs_docs = []
     with open(flags.inputs_docs_path, "r", encoding="utf-8") as f:
-        for i in range(flags.inputs_docs_batch_size):
-            inputs_docs.append(f.readline())
+        for i in range(1000):
+            read_docs.append(f.readline())
+    import random
+    for i in range(flags.inputs_docs_batch_size):
+        inputs_docs.append(random.choice(read_docs))
     summary_model = SummaryModel()
     summary_model.eval(inputs_docs=inputs_docs, save_model_path=save_model_path)
 
@@ -233,9 +237,9 @@ def train_summary_cl_model(model_save_suffix = model_save_suffixes["train_summar
     assert flags.pretrain_model_dir, "pretrain_model_dir is required"
     save_model_path = osp.join(flags.save_model_dir, model_save_suffix)
     pretrained_model_pathes = {
-        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
+        "EMBEDDING": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_summary_model"]),
         "T_S": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_lm_model"]),
-        "SUMMARY": osp.join(flags.pretrain_model_dir, model_save_suffixes["[no_prefix]train_summary_model"]),
+        "SUMMARY": osp.join(flags.pretrain_model_dir, model_save_suffixes["train_summary_model"]),
     }
     if flags["adv_type"] == "adv":
         adv_cl_model = AdversarialSummaryModel()
@@ -243,7 +247,7 @@ def train_summary_cl_model(model_save_suffix = model_save_suffixes["train_summar
         raise Exception("Unimplement")
     else:
         raise Exception("Unknow adv_type: %s" % flags["adv_type"])
-    adv_cl_model.build(training=True, restorer_tag_notifier=["SUMMARY"])
+    adv_cl_model.build(training=True, restorer_tag_notifier=["EMBEDDING", "SUMMARY"])
     adv_cl_model.fit(save_model_path=save_model_path, pretrain_model_pathes=pretrained_model_pathes)
 
 def eval_summary_cl_model():
@@ -253,12 +257,18 @@ def eval_summary_cl_model():
     generator_model.build(eval_cl=True)
     generator_model.eval(save_model_path=save_model_path)
 
+# intersection count between classi word_freqs and summary word_freqs: {10000: 9652, 20000: 18673, 30000: 26590, 40000: 33259, 50000: 38737, 60000: 43262, 70000: 46964, 80000: 49788, 86934: 51515}
 if __name__ == "__main__":
     if flags.step == "train_summary_model" or flags.step == "eval_summary_model":
+        inersect_count = []
         vocab_freqs = WordCounter().load_and_merge(
             osp.join(flags["lm_inputs"]["datapath"], "%s_word_freqs.pickle" % flags["lm_inputs"]["dataset"]),
-            osp.join(flags["lm_inputs"]["datapath"], "summary_word_freqs.pickle")
+            osp.join(flags["lm_inputs"]["datapath"], "summary_word_freqs.pickle"),
+            max_words=list(range(0, flags["inputs"]["vocab_size"], 10000))[1:] + [flags["inputs"]["vocab_size"]],
+            return_cache=inersect_count
         ).most_common_freqs(flags["lm_sequence"]["vocab_size"])
+        inersect_count = inersect_count[0]
+        logger.info("intersection count between classi word_freqs and summary word_freqs: %s" % inersect_count)
     else:
         vocab_freqs = WordCounter().load(
             osp.join(flags["lm_inputs"]["datapath"], "%s_word_freqs.pickle" % flags["lm_inputs"]["dataset"])).most_common_freqs(

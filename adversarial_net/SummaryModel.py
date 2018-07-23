@@ -27,6 +27,14 @@ class SummaryModel(BaseModel):
             vocab_freqs=self.arguments["vocab_freqs"],
             normalize=self.arguments["lm_sequence"]["normalize"],
             keep_embed_prob=self.arguments["lm_sequence"]["keep_embed_prob"])
+        # self.to_embedding_decoder = seq.EmbeddingSequence(
+        #     var_scope_name="embedding_decoder",
+        #     vocab_size=self.arguments["lm_sequence"]["vocab_size"],
+        #     embedding_dim=self.arguments["lm_sequence"]["embedding_dim"],
+        #     vocab_freqs=self.arguments["vocab_freqs"],
+        #     normalize=self.arguments["lm_sequence"]["normalize"],
+        #     keep_embed_prob=self.arguments["lm_sequence"]["keep_embed_prob"])
+        self.to_embedding_decoder = self.to_embedding
         self.grus = seq.SummaryGRUs(var_scope_name="GRUs",
                                     state_size=self.arguments["summary"]["rnn_cell_size"],
                                     input_dim=self.arguments["lm_sequence"]["embedding_dim"],
@@ -49,6 +57,7 @@ class SummaryModel(BaseModel):
             decoder_cell=self.grus.decoder_cell,
             state_proj_layer=self.atten_loss.state_proj_layer,
             to_embedding_layers=self.to_embedding,
+            to_embedding_layers_decoder=self.to_embedding_decoder,
             rnn_size=self.arguments["summary"]["rnn_cell_size"],
             vocab_size=self.arguments["lm_sequence"]["vocab_size"])
 
@@ -67,7 +76,7 @@ class SummaryModel(BaseModel):
         decoder_input_tensor = decoder_bucket["decoder_input"]
         decoder_target_tensor = decoder_bucket["decoder_target"]
         encoder_embed_inputs = self.to_embedding(encoder_input_tensor)
-        decoder_embed_inputs = self.to_embedding(decoder_input_tensor)
+        decoder_embed_inputs = self.to_embedding_decoder(decoder_input_tensor)
         self.loss, _ = self.atten_loss(
                                     encoder_embed_inputs=encoder_embed_inputs,
                                     decoder_embed_inputs=decoder_embed_inputs,
@@ -76,7 +85,8 @@ class SummaryModel(BaseModel):
                                     decoder_len=decoder_len_tensor)
         self.train_op = self.optimize(self.loss, self.arguments["max_grad_norm"],
                                       self.arguments["lr"], self.arguments["lr_decay"],
-                                      norm_embedding = True)
+                                      norm_embedding = True, optimizer=tf.train.AdadeltaOptimizer,
+                                      optimizer_kwargs={"epsilon": 1e-6})
         super(SummaryModel, self).build()
 
     def eval(self, inputs_docs, save_model_path, lower_case=True):
@@ -111,11 +121,16 @@ class SummaryModel(BaseModel):
             logger.info("doc: " + inputs_docs[i])
             logger.info("title: " + " ".join(output_words[i][:final_sequence_lengths_val[i]]))
 
-    def fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None):
+    def fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None, remove_variable_scope_prefix = True):
         variables_to_restore = []
-        for variable in self.trainable_weights():
+        for variable in tf.trainable_variables():
             if "embedding" in variable.op.name:
-                variables_to_restore.append(variable)
+                if remove_variable_scope_prefix:
+                    if isinstance(variables_to_restore, list):
+                        variables_to_restore = {}
+                    variables_to_restore[variable.op.name.split("/", 1)[1]] = variable
+                else:
+                    variables_to_restore.append(variable)
 
         super(SummaryModel, self)._fit(model_inpus, save_model_path, pretrained_model_path, variables_to_restore=variables_to_restore)
 

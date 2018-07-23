@@ -50,6 +50,13 @@ class ArgumentsBuilder(object):
             arg_name = "--{name}".format(name=name)
         sysargv.extend([arg_name, value])
 
+    def set_real_argument_value(self, name, value, scope=None):
+        if scope is None:
+            setattr(self.arguments, name, value)
+        else:
+            scope_dict = getattr(self.arguments, scope)
+            scope_dict[name] = value
+
     def str2bool(self, v):
         if v == True:
             return True

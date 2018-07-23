@@ -437,14 +437,28 @@ class WordCounter(object):
 			self.words_list = pickle.load(f)
 		return self
 
-	def load_and_merge(self, datapath, merge_path):
+	# max_words can be a list or an integer, used for stat
+	def load_and_merge(self, datapath, merge_path, max_words = None, return_cache = [], stat = True):
 		self.load(datapath)
 		with open(merge_path, "rb") as f:
 			merge_words_list = pickle.load(f)
+		inersect_count = 0
 		merge_words_dict = dict(merge_words_list)
 		for i, (word, freq) in enumerate(self.words_list):
 			if word in merge_words_dict:
 				self.words_list[i] = (word, merge_words_dict[word])
+				if stat:
+					if max_words is None:
+						inersect_count += 1
+					elif isinstance(max_words, list):
+						if inersect_count == 0:
+							inersect_count = dict(zip(max_words, [0] * len(max_words)))
+						for u in max_words:
+							if i < u:
+								inersect_count[u] += 1
+					elif i < max_words:
+						inersect_count += 1
+		return_cache.append(inersect_count)
 		return self
 
 	@property

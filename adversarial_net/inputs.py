@@ -349,7 +349,7 @@ def construct_summary_model_bucket_input(datapath, dataset, modelname, batch_siz
     encoder_decode_bucket = tf.contrib.training.bucket(which_bucket=which_bucket,
                                                        tensors=[encoder_len, decoder_len, encoder_input, decoder_input, decoder_target],
                                                        num_buckets=len(encoder_decoder_bucket_boundaries),
-                                                       num_threads=4, capacity=batch_size * 10, dynamic_pad=True,
+                                                       num_threads=6, capacity=batch_size * 10, dynamic_pad=True,
                                                        allow_smaller_final_batch=False, batch_size=batch_size,
                                                        name="encoder_decoder_bucket")
     _, (encoder_len_tensor, decoder_len_tensor, encoder_input_tensor, decoder_input_tensor, decoder_target_tensor) = encoder_decode_bucket

@@ -432,6 +432,8 @@ class AdversarialDDGModel(BaseModel):
         self._fit_kwargs["eval_graph"] = eval_graph
         return variables, savers, losses, accs, eval_graph
 
+    # restorer_tag_notifier, do not remove variable scope prefix
+    # lm, ae model training graph dont have a scope prefix
     def post_build(self, pretrained_sequences, savers, kwargs):
         if "restorer_tag_notifier" in kwargs:
             restorer_tag_notifier = kwargs["restorer_tag_notifier"]

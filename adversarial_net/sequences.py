@@ -648,8 +648,6 @@ class SummaryBahdanauAttentionLoss(object):
             outputs_logits = outputs[0]
             weights = tf.sequence_mask(decoder_len, dtype=tf.float32)
 
-            outputs_logits = tf.clip_by_value(outputs_logits, 0.3, 0.6)
-
             loss = tf.contrib.seq2seq.sequence_loss(outputs_logits, decoder_targets, weights,
                 average_across_timesteps=False,
                 average_across_batch=False)
@@ -680,7 +678,7 @@ class SummaryBahdanauAttentionLoss(object):
         return restorers
 
 class EvalSummaryBahdanauAttention(object):
-    def __init__(self, associate_var_scope_name, encoder_fw_cell, encoder_bw_cell, decoder_cell, state_proj_layer, to_embedding_layers, rnn_size, vocab_size):
+    def __init__(self, associate_var_scope_name, encoder_fw_cell, encoder_bw_cell, decoder_cell, state_proj_layer, to_embedding_layers, to_embedding_layers_decoder, rnn_size, vocab_size):
         self.encoder_fw_cell = encoder_fw_cell
         self.encoder_bw_cell = encoder_bw_cell
         self.decoder_cell = decoder_cell
@@ -688,6 +686,7 @@ class EvalSummaryBahdanauAttention(object):
         self.vocab_size = vocab_size
         self.state_proj_layer = state_proj_layer
         self.to_embedding_layers = to_embedding_layers
+        self.to_embedding_layers_decoder = to_embedding_layers_decoder
         self.var_scope_name = associate_var_scope_name
         self.reuse = None
 
@@ -714,7 +713,7 @@ class EvalSummaryBahdanauAttention(object):
 
             decoder = tf.contrib.seq2seq.BeamSearchDecoder(
                 cell=atten_decoder_cell,
-                embedding=self.to_embedding_layers,
+                embedding=self.to_embedding_layers_decoder,
                 start_tokens=st_toks,
                 end_token=eos_tag,
                 initial_state=decoder_initial_state,
