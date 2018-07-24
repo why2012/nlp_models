@@ -52,8 +52,10 @@ class AdversarialSummaryModel(AdversarialDDGModel):
             decoder_cell=self.grus.decoder_cell,
             state_proj_layer=self.atten_loss.state_proj_layer,
             to_embedding_layers=self.to_embedding,
+            to_embedding_layers_decoder=self.to_embedding,
             rnn_size=self.arguments["summary"]["rnn_cell_size"],
-            vocab_size=self.arguments["lm_sequence"]["vocab_size"])
+            vocab_size=self.arguments["lm_sequence"]["vocab_size"],
+            decoder_type=seq.EvalSummaryBahdanauAttention.GREEDY_EMBEDDING)
 
     def get_summary_inputs(self, embedding, seq_length, to_embedding_fn, beam_width=10, maximum_iterations=50):
         batch_size = tf.shape(embedding)[0]

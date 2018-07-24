@@ -5,11 +5,24 @@ from multiprocessing import Lock
 import argparse
 from sys import argv as sysargv
 
+global_logging_file = None
+global_logger = None
 def getLogger(name=None):
-    logger = logging.getLogger(name)
-    logging.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s')
-    logging.root.setLevel(level=logging.INFO)
-    return logger
+    global global_logger
+    if global_logger is None:
+        global_logger = logging.getLogger(name)
+        logging.basicConfig(format='%(asctime)s: %(levelname)s: %(message)s')
+        logging.root.setLevel(level=logging.INFO)
+    return global_logger
+
+def add_logging_filehandler(logging_file=None):
+    global global_logging_file
+    if logging_file and global_logging_file is None:
+        global_logging_file = logging_file
+    if global_logging_file:
+        handler = logging.FileHandler(global_logging_file)
+        handler.setLevel(logging.INFO)
+        global_logger.addHandler(handler)
 
 class ArgumentsBuilder(object):
     def __init__(self):
@@ -135,14 +148,17 @@ class ArgumentsBuilder(object):
             self.name_variables.append(name)
         return self
 
-    def build(self):
+    def build(self, parse_known = False):
         class ArgumentsGetter(object):
             def __init__(self):
                 pass
             def __getitem__(self, item):
                 return getattr(self, item)
         self.arguments = ArgumentsGetter()
-        self.parser.parse_args(namespace=self.arguments)
+        if parse_known:
+            self.parser.parse_known_args(namespace=self.arguments)
+        else:
+            self.parser.parse_args(namespace=self.arguments)
         self.built = True
 
     def __getattr__(self, item):

@@ -14,7 +14,6 @@ from collections import defaultdict
 # unroll_steps 400
 # rnn_cell_size 1024
 # vocab_size 86934
-logger = getLogger("model")
 def configure():
     flags.register_variable(name="vocab_freqs")
     flags.add_argument(scope="inputs", name="datapath", argtype=str)
@@ -89,7 +88,10 @@ def configure():
     flags.add_argument(name="tfdebug_root", argtype=str, default=None)
     flags.add_argument(name="use_exp_mov_avg_loss", argtype=bool, default=False)
     flags.add_argument(name="use_exp_mov_avg_loss_decay", argtype=float, default=0.9)
+
+    flags.add_argument(name="logging_file", argtype=str, default=None)
 configure()
+logger = getLogger("model")
 
 class VariableManager(object):
     def __init__(self):
@@ -280,6 +282,13 @@ class BaseModel(object):
                 self.check_best_loss_val()
                 logger.info("resotre model from %s" % model_ckpt.model_checkpoint_path)
                 if saver_for_model_restore is None:
+                    # vars = []
+                    # for var in tf.global_variables():
+                    #     if "ExponentialMovingAverage" not in var.op.name:
+                    #         vars.append(var)
+                    #     else:
+                    #         print("----------", var)
+                    # saver_for_model_restore = tf.train.Saver(vars)
                     saver_for_model_restore = tf.train.Saver()
                 saver_for_model_restore.restore(sess, model_ckpt.model_checkpoint_path)
 

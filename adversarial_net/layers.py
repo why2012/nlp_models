@@ -49,7 +49,12 @@ class Embedding(keras.layers.Layer):
           shape = embedded.get_shape().as_list()
           if None in shape:
               shape = tf.shape(embedded)
-          noise_shape = (shape[0], 1, shape[2])
+          # (batch_size, time_steps, embed_size)
+          if len(embedded.get_shape().as_list()) == 3:
+            noise_shape = (shape[0], 1, shape[2])
+          # (batch_size, embed_size)
+          else:
+            noise_shape = (shape[0], shape[1])
 
           # Use same dropout masks at each timestep with specifying noise_shape.
           # This slightly improves performance.

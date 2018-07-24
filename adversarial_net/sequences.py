@@ -678,7 +678,11 @@ class SummaryBahdanauAttentionLoss(object):
         return restorers
 
 class EvalSummaryBahdanauAttention(object):
-    def __init__(self, associate_var_scope_name, encoder_fw_cell, encoder_bw_cell, decoder_cell, state_proj_layer, to_embedding_layers, to_embedding_layers_decoder, rnn_size, vocab_size):
+    BEAM_SEARCH = "beam_search"
+    GREEDY_EMBEDDING = "greedy_embedding"
+    # decoder_type: beam_search|greedy_embedding
+    def __init__(self, associate_var_scope_name, encoder_fw_cell, encoder_bw_cell, decoder_cell, state_proj_layer,
+                 to_embedding_layers, to_embedding_layers_decoder, rnn_size, vocab_size, decoder_type = "beam_search"):
         self.encoder_fw_cell = encoder_fw_cell
         self.encoder_bw_cell = encoder_bw_cell
         self.decoder_cell = decoder_cell
@@ -689,6 +693,12 @@ class EvalSummaryBahdanauAttention(object):
         self.to_embedding_layers_decoder = to_embedding_layers_decoder
         self.var_scope_name = associate_var_scope_name
         self.reuse = None
+        assert decoder_type in ["beam_search", "greedy_embedding"], "decoder_type not in [\"beam_search\", \"greedy_embedding\"]"
+        self.decoder_type = decoder_type
+        if self.decoder_type == self.BEAM_SEARCH:
+            self.need_tile = True
+        else:
+            self.need_tile = False
 
     def __call__(self, batch_size, sos_tag, eos_tag, encoder_embed_inputs, encoder_len, beam_width, maximum_iterations=200):
         with tf.variable_scope(self.var_scope_name) as vs:
@@ -696,10 +706,12 @@ class EvalSummaryBahdanauAttention(object):
                                                                               encoder_embed_inputs,
                                                                               sequence_length=encoder_len,
                                                                               dtype=encoder_embed_inputs.dtype)
-            decoder_init_state = self.state_proj_layer(tf.concat(encoder_states, axis=1))
+            decoder_initial_state = self.state_proj_layer(tf.concat(encoder_states, axis=1))
             decoder_atten_context = tf.concat(encoder_outputs, axis=2)
-            decoder_atten_context = tf.contrib.seq2seq.tile_batch(decoder_atten_context, multiplier=beam_width)
-            encoder_len = tf.contrib.seq2seq.tile_batch(encoder_len, multiplier=beam_width)
+            if self.need_tile:
+                decoder_atten_context = tf.contrib.seq2seq.tile_batch(decoder_atten_context, multiplier=beam_width)
+                encoder_len = tf.contrib.seq2seq.tile_batch(encoder_len, multiplier=beam_width)
+                decoder_initial_state = tf.contrib.seq2seq.tile_batch(decoder_initial_state, multiplier=beam_width)
             attention_mechanism = tf.contrib.seq2seq.BahdanauAttention(self.rnn_size, decoder_atten_context, encoder_len)
             atten_decoder_cell = tf.contrib.seq2seq.AttentionWrapper(self.decoder_cell, attention_mechanism,
                                                                      attention_layer_size=self.rnn_size * 2,
@@ -707,31 +719,40 @@ class EvalSummaryBahdanauAttention(object):
             atten_decoder_cell = tf.contrib.rnn.OutputProjectionWrapper(atten_decoder_cell, self.vocab_size)
             st_toks = tf.fill((batch_size,), sos_tag)
 
-            decoder_initial_state = tf.contrib.seq2seq.tile_batch(decoder_init_state, multiplier=beam_width)
-            decoder_zeros_state = atten_decoder_cell.zero_state(dtype=encoder_embed_inputs.dtype, batch_size=batch_size * beam_width)
+            decoder_zeros_state = atten_decoder_cell.zero_state(dtype=encoder_embed_inputs.dtype, batch_size=batch_size * beam_width if self.need_tile else batch_size)
             decoder_initial_state = decoder_zeros_state.clone(cell_state=decoder_initial_state)
 
-            decoder = tf.contrib.seq2seq.BeamSearchDecoder(
-                cell=atten_decoder_cell,
-                embedding=self.to_embedding_layers_decoder,
-                start_tokens=st_toks,
-                end_token=eos_tag,
-                initial_state=decoder_initial_state,
-                beam_width=beam_width,
-                output_layer=None,
-                length_penalty_weight=0.0)
+            if self.decoder_type == self.BEAM_SEARCH:
+                decoder = tf.contrib.seq2seq.BeamSearchDecoder(
+                    cell=atten_decoder_cell,
+                    embedding=self.to_embedding_layers_decoder,
+                    start_tokens=st_toks,
+                    end_token=eos_tag,
+                    initial_state=decoder_initial_state,
+                    beam_width=beam_width,
+                    output_layer=None,
+                    length_penalty_weight=0.0)
+            elif self.decoder_type == self.GREEDY_EMBEDDING:
+                helper = tf.contrib.seq2seq.GreedyEmbeddingHelper(self.to_embedding_layers_decoder, st_toks, eos_tag)
+                decoder = tf.contrib.seq2seq.BasicDecoder(atten_decoder_cell, helper, decoder_initial_state)
+            else:
+                raise Exception("Unkonw decoder type: %s" % self.decoder_type)
 
-            # final_sequence_lengths (batch_size, beam_width)
             outputs, final_state, final_sequence_lengths = tf.contrib.seq2seq.dynamic_decode(decoder, maximum_iterations=maximum_iterations)
 
-            # Beams are ordered from best to worst.
-            # beam_outputs (batch_size, max_iters, beam_width)
-            beam_outputs = outputs.predicted_ids
+            if self.decoder_type == self.BEAM_SEARCH:
+                # final_sequence_lengths (batch_size, beam_width)
+                # Beams are ordered from best to worst.
+                # beam_outputs (batch_size, max_iters, beam_width)
+                outputs = outputs.predicted_ids
+            else:
+                outputs = tf.expand_dims(tf.argmax(outputs[0], axis=2), 2)
+                final_sequence_lengths = tf.expand_dims(final_sequence_lengths, 1)
             if self.reuse is None:
                 self._trainable_weights = vs.trainable_variables()
                 self.reuse = True
 
-        return beam_outputs, final_sequence_lengths
+        return outputs, final_sequence_lengths
 
     @property
     def trainable_weights(self):

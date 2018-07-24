@@ -59,7 +59,8 @@ class SummaryModel(BaseModel):
             to_embedding_layers=self.to_embedding,
             to_embedding_layers_decoder=self.to_embedding_decoder,
             rnn_size=self.arguments["summary"]["rnn_cell_size"],
-            vocab_size=self.arguments["lm_sequence"]["vocab_size"])
+            vocab_size=self.arguments["lm_sequence"]["vocab_size"],
+            decoder_type=seq.EvalSummaryBahdanauAttention.GREEDY_EMBEDDING)
 
     def build(self):
         logger.info("constructing summary model dataset...")

@@ -566,6 +566,7 @@ class AdversarialDDGModel(BaseModel):
             global_step = tf.Variable(0, trainable=False, name="%s_global_step" % train_op_name)
             setattr(self, "%s_global_step" % train_op_name, global_step)
             train_op, train_op_lr = self._get_train_op_with_lr_decay(grads_and_vars, global_step, lr=lr, lr_decay=lr_decay)
+            train_op, self.exp_mov_avg_loss = self.exponential_moving_average_loss(train_op, loss, global_step)
             tf.summary.scalar('%s_learning_rate' % train_op_name, train_op_lr, collections=[tf.GraphKeys.SUMMARIES, train_op_name])
             tf.summary.scalar('%s_loss' % train_op_name, loss, collections=[tf.GraphKeys.SUMMARIES, train_op_name])
             if self.use_average:
@@ -652,11 +653,13 @@ class AdversarialDDGModel(BaseModel):
     def single_loss_train_step(self, sess, train_op, loss, global_step, acc_ops, save_model_path, max_steps):
         run_options, run_metadata = self._pretrain_step(self.global_step_val)
         start_time = time.time()
-        _, loss_val, self.global_step_val, summary, acc_vals = sess.run(
-            [train_op, loss, global_step, self.train_step_vars["merged_summary"], acc_ops],
+        _, loss_val, self.global_step_val, summary, acc_vals, exp_mov_avg_loss_val = sess.run(
+            [train_op, loss, global_step, self.train_step_vars["merged_summary"], acc_ops, self.exp_mov_avg_loss],
             feed_dict=self.feed_dict,
             options=run_options,
             run_metadata=run_metadata)
+        if self.arguments["use_exp_mov_avg_loss"]:
+            loss_val = exp_mov_avg_loss_val
         duration = time.time() - start_time
         self._summary_step(sess=sess, debug_tensors=self.debug_tensors, global_step_val=self.global_step_val,
                            summary_writer=self.train_step_vars["summary_writer"], summary=summary,

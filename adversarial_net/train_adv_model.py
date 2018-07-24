@@ -8,8 +8,8 @@ from adversarial_net.SummaryModel import SummaryModel
 from adversarial_net import arguments as flags
 from adversarial_net.preprocessing import WordCounter
 from adversarial_net import osp
-from adversarial_net.utils import getLogger
-logger = getLogger("train_model")
+from adversarial_net.utils import getLogger, add_logging_filehandler
+
 training_step_vals = ["train_lm_model", "pretrain_cl_model", "train_ae_model", "train_generator", "train_topic_generator",
                       "train_cl_model", "eval_generator", "eval_cl_model", "eval_lm_model", "eval_ae_model",
                       "train_summary_model", "eval_summary_model", "train_summary_cl_model", "eval_summary_cl_model"]
@@ -78,6 +78,9 @@ flags.add_argument(name="adv_type", argtype=adv_type, default="adv")
 
 flags.add_argument(name="inputs_docs_path", argtype=str, default="E:/kaggle/avito/imdb_testset/adversarial_net/data/summary/train/train.article.txt")
 flags.add_argument(name="inputs_docs_batch_size", argtype=int, default=5)
+
+logger = getLogger("train_model")
+add_logging_filehandler(flags["logging_file"])
 
 # training process         (->embed)
 #                  |--> training lm_model |         (->embed)                 (lock embed)              (lock embed)               (->embed)
