@@ -58,7 +58,14 @@ class AdversarialSummaryModel(AdversarialDDGModel):
             decoder_type=seq.EvalSummaryBahdanauAttention.GREEDY_EMBEDDING)
 
     def get_summary_inputs(self, embedding, seq_length, to_embedding_fn, beam_width=10, maximum_iterations=50):
+        # embedding (batch_size, time_steps, embed_size)
         batch_size = tf.shape(embedding)[0]
+        # add start tag
+        start_tags = tf.fill((batch_size, 1), SOS_TAG)
+        # start_tags_embedding (batch_size, 1, embed_size)
+        start_tags_embedding = to_embedding_fn(start_tags)
+        # embedding (batch_size, 1 + time_steps, embed_size)
+        embedding = tf.concat([start_tags_embedding, embedding], axis=1)
         # beam_outputs (batch_size, max_iters, beam_width)
         # final_sequence_lengths (batch_size, beam_width)
         beam_outputs, final_sequence_lengths = self.summary_layer(batch_size=batch_size, sos_tag=SOS_TAG, eos_tag=EOS_TAG,
