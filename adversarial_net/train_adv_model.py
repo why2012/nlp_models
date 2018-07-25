@@ -78,6 +78,7 @@ flags.add_argument(name="adv_type", argtype=adv_type, default="adv")
 
 flags.add_argument(name="inputs_docs_path", argtype=str, default="E:/kaggle/avito/imdb_testset/adversarial_net/data/summary/train/train.article.txt")
 flags.add_argument(name="inputs_docs_batch_size", argtype=int, default=5)
+flags.add_argument(name="apply_filter", argtype=bool, default=False)
 
 logger = getLogger("train_model")
 add_logging_filehandler(flags["logging_file"])
@@ -229,12 +230,14 @@ def eval_summary_model(model_save_suffix = model_save_suffixes["train_summary_mo
     inputs_docs = []
     with open(flags.inputs_docs_path, "r", encoding="utf-8") as f:
         for i in range(1000):
-            read_docs.append(f.readline())
+            doc = f.readline()
+            if doc:
+                read_docs.append(doc)
     import random
     for i in range(flags.inputs_docs_batch_size):
         inputs_docs.append(random.choice(read_docs))
     summary_model = SummaryModel()
-    summary_model.eval(inputs_docs=inputs_docs, save_model_path=save_model_path)
+    summary_model.eval(inputs_docs=inputs_docs, save_model_path=save_model_path, apply_filter=flags["apply_filter"])
 
 def train_summary_cl_model(model_save_suffix = model_save_suffixes["train_summary_cl_model"]):
     assert flags.pretrain_model_dir, "pretrain_model_dir is required"

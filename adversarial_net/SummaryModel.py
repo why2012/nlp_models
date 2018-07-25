@@ -90,11 +90,17 @@ class SummaryModel(BaseModel):
                                       optimizer_kwargs={"epsilon": 1e-6})
         super(SummaryModel, self).build()
 
-    def eval(self, inputs_docs, save_model_path, lower_case=True):
+    def eval(self, inputs_docs, save_model_path, lower_case=True, apply_filter=False):
         batch_size = len(inputs_docs)
         wordCounter = DataLoader.reload_word_counter(
             vocab_abspath=getDatasetFilePath(self.arguments["inputs"]["datapath"], "summary", "word_freqs"))
         wordCounter.lower_case = lower_case
+        filter_words_list = wordCounter.load_filter_words(
+            getDatasetFilePath(self.arguments["inputs"]["datapath"], "summary", "summary_word_freqs"),
+            max_words=self.arguments["lm_sequence"]["vocab_size"],
+            apply_filter_onthego=apply_filter
+        )
+        logger.info("filtered %s words" % len(filter_words_list))
         inputs_docs_idx = wordCounter.transform_docs(docs=inputs_docs, max_words=self.arguments["lm_sequence"]["vocab_size"])
         max_len = max(map(len, inputs_docs_idx))
         seq_len = []
@@ -120,6 +126,7 @@ class SummaryModel(BaseModel):
         for i in range(len(inputs_docs)):
             logger.info("-"*20 + " doc-%s " % i + "-"*20)
             logger.info("doc: " + inputs_docs[i])
+            logger.info("doc_idx: " + str(inputs_docs_idx[i].tolist()))
             logger.info("title: " + " ".join(output_words[i][:final_sequence_lengths_val[i]]))
 
     def fit(self, model_inpus = None, save_model_path = None, pretrained_model_path = None, remove_variable_scope_prefix = True):

@@ -431,6 +431,7 @@ class WordCounter(object):
 		self.eos_index = 2
 		self._default_counts = [["unk", -1], [self.bos_tag, -1], [self.eos_tag, -1]]
 		self.default_counts_len = len(self.default_counts)
+		self.filter_words_list = []
 
 	def load(self, datapath):
 		with open(datapath, "rb") as f:
@@ -460,6 +461,28 @@ class WordCounter(object):
 						inersect_count += 1
 		return_cache.append(inersect_count)
 		return self
+
+	def load_filter_words(self, datapath, max_words = None, apply_filter_onthego = False):
+		with open(datapath, "rb") as f:
+			filter_dict = dict(pickle.load(f))
+		filter_words_list = []
+		for i, (word, freq) in enumerate(self.words_list):
+			if word not in filter_dict:
+				filter_words_list.append(i)
+				if apply_filter_onthego:
+					self.words_list[i] = ("<filtered_word>|%s" % word, freq)
+		if max_words and max_words > 0:
+			filter_words_list = list(filter(lambda x: x < max_words, filter_words_list))
+		self.filter_words_list = filter_words_list
+		return filter_words_list
+
+	def apply_filter(self):
+		if self.filter_words_list:
+			for i, (word, freq) in enumerate(self.words_list):
+				if i in self.filter_words_list:
+					self.words_list[i] = ("<filtered_word>|%s" % word, freq)
+		else:
+			raise Exception("call load_filter_words first")
 
 	@property
 	def default_counts(self):

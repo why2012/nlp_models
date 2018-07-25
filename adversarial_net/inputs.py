@@ -25,6 +25,8 @@ def getDatasetFilePath(datapath, dataset, modelname):
             return osp.join(datapath, "summary_dataset.pickle")
         elif modelname == "word_freqs":
             return osp.join(datapath, "merged_summary_word_freqs.pickle")
+        elif modelname == "summary_word_freqs":
+            return osp.join(datapath, "summary_word_freqs.pickle")
     elif dataset == "truncated_summary":
         if modelname == "summary_model":
             return osp.join(datapath, "truncated_summary_dataset.pickle")
